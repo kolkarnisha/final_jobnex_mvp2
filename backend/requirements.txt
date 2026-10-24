@@ -1,0 +1,12 @@
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+pydantic>=2.0.0
+mysql-connector-python>=8.0.0
+pytest>=8.0
+pytest-cov>=5.0
+sqlalchemy
+itsdangerous>=2.2.0
+authlib
+anthropic
+starlette
+python-dotenv

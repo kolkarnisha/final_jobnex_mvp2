@@ -1,0 +1,23 @@
+Jobnex MVP-2 backend files (copy these into your existing best_pro/backend folder).
+Python 3.10+ dependencies:
+  pip install fastapi uvicorn sqlalchemy mysql-connector-python pydantic pytest anthropic
+
+Set environment variables before running (Windows PowerShell):
+  $env:DB_HOST="127.0.0.1"
+  $env:DB_PORT="3306"
+  $env:DB_USER="root"
+  $env:DB_NAME="jobnex"
+  $env:DB_PASSWORD="YOUR_MYSQL_PASSWORD"
+Optional AI:
+  $env:ANTHROPIC_API_KEY="your-key"
+Run API:
+  uvicorn analyzer:app --reload
+Run tests:
+  pytest -q
+Database smoke test:
+  python test_db.py --init
+Insert/round-trip:
+  python insert_test.py --dry-run
+
+Security: do not commit secrets. Since the database password was pasted into chat, rotate it if it is a real credential.
+Scope note: these seven files implement resume analysis, database setup, smoke/round-trip scripts, and interview/course service. The full PRD's auth, ownership/privacy enforcement, jobs, applications/dashboard, chat route, auto-apply and SMTP refusal routes need additional route/model code; they cannot all be implemented by only these seven files without expanding the existing file set or adding code to other existing files.
