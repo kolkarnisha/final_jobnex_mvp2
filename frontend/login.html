@@ -89,17 +89,15 @@
       <div class="login-details-container" id="login-details-container">
         <div class="auth-card-header">
           <h1 id="auth-title">Sign In</h1>
-          <p>Enter your credentials to access your career command center.</p>
-        </div>
-
-        <div class="callout callout-demo" role="note" style="margin-bottom: 20px;">
-          <span class="callout-icon">ℹ️</span>
-          <div>
-            <strong>Demo environment:</strong> No real password required. Any valid email and password of 8+ characters opens the full suite.
-          </div>
+          <p id="auth-subtitle">Enter your credentials to access your career command center.</p>
         </div>
 
         <form id="login-form" novalidate>
+          <div id="register-name-wrap" style="margin-bottom: 16px;" hidden>
+            <label for="register-name">Full Name <span class="text-muted">(optional)</span></label>
+            <input type="text" id="register-name" name="name" placeholder="Your name" autocomplete="name" maxlength="100">
+          </div>
+
           <div style="margin-bottom: 16px;">
             <label for="login-email">Email Address</label>
             <input
@@ -107,7 +105,6 @@
               id="login-email"
               name="email"
               placeholder="candidate@example.com"
-              value="gulabiparameshachari@gmail.com"
               autocomplete="email"
               required
               aria-describedby="login-email-error"
@@ -122,8 +119,8 @@
                 type="password"
                 id="login-password"
                 name="password"
-                value="CandidatePass123!"
                 autocomplete="current-password"
+                minlength="8"
                 required
                 aria-describedby="login-password-error"
               >
@@ -158,8 +155,8 @@
           Sign in with Google
         </button>
 
-        <button type="button" id="demo-fill-btn" class="btn btn-outline btn-sm" style="width: 100%;">
-          Fill Demo Candidate Credentials
+        <button type="button" id="auth-mode-toggle" class="btn btn-outline btn-sm" style="width: 100%;">
+          New here? Create an account
         </button>
 
         <div style="text-align: center; margin-top: 16px;">

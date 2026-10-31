@@ -6,6 +6,7 @@
   <title>Find Jobs – JOBNEX</title>
   <meta name="description" content="Discover, filter, and queue verified job applications. Evaluate role match scores based on your candidate skills.">
   <link rel="stylesheet" href="common.css">
+  <link rel="stylesheet" href="glow-card.css">
 </head>
 <body data-page="jobs">
   <a class="skip-link" href="#main">Skip to main content</a>
@@ -142,6 +143,30 @@
     <div id="job-results" class="grid-auto" aria-live="polite">
       <!-- Injected by common.js -->
     </div>
+
+    <!-- Next steps (glow cards) -->
+    <section class="card" aria-labelledby="next-heading">
+      <div class="card-header">
+        <h2 id="next-heading">Next Steps</h2>
+      </div>
+      <div class="glow-grid">
+        <a href="applications.html" class="glow-card">
+          <p class="glow-card__title">Applications</p>
+          <p>Track every application and follow-up in one pipeline.</p>
+          <p>Open pipeline &rarr;</p>
+        </a>
+        <a href="analyzer.html" class="glow-card">
+          <p class="glow-card__title">ATS Resume</p>
+          <p>Score your resume against a job description and fix what is missing.</p>
+          <p>Analyze resume &rarr;</p>
+        </a>
+        <a href="interveiw.html" class="glow-card">
+          <p class="glow-card__title">Interview Drills</p>
+          <p>Practice behavioral and technical questions with STAR guidance.</p>
+          <p>Start practice &rarr;</p>
+        </a>
+      </div>
+    </section>
   </main>
 
   <footer id="site-footer" class="site-footer"></footer>

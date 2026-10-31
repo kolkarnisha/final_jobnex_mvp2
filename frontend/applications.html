@@ -6,6 +6,7 @@
   <title>Application Pipeline & Referrals – JOBNEX</title>
   <meta name="description" content="Manage your candidate application lifecycle. Track milestones via Table and Kanban views, and generate professional recruiter referral drafts.">
   <link rel="stylesheet" href="common.css">
+  <link rel="stylesheet" href="glow-card.css">
 </head>
 <body data-page="applications">
   <a class="skip-link" href="#main">Skip to main content</a>
@@ -206,6 +207,30 @@
           <label for="ref-body" class="text-xs text-muted" style="text-transform: uppercase;">Email Body (Editable)</label>
           <textarea id="ref-body" rows="9" style="min-height: 200px; font-family: inherit; font-size: 0.9375rem; line-height: 1.6;"></textarea>
         </div>
+      </div>
+    </section>
+
+    <!-- Next steps (glow cards) -->
+    <section class="card" aria-labelledby="next-heading">
+      <div class="card-header">
+        <h2 id="next-heading">Next Steps</h2>
+      </div>
+      <div class="glow-grid">
+        <a href="interveiw.html" class="glow-card">
+          <p class="glow-card__title">Interview Drills</p>
+          <p>Practice behavioral and technical questions with STAR guidance.</p>
+          <p>Start practice &rarr;</p>
+        </a>
+        <a href="jobs.html" class="glow-card">
+          <p class="glow-card__title">Find Jobs</p>
+          <p>Browse curated roles that match your stack and experience.</p>
+          <p>Search jobs &rarr;</p>
+        </a>
+        <a href="analyzer.html" class="glow-card">
+          <p class="glow-card__title">ATS Resume</p>
+          <p>Score your resume against a job description and fix what is missing.</p>
+          <p>Analyze resume &rarr;</p>
+        </a>
       </div>
     </section>
   </main>

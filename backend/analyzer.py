@@ -18,8 +18,7 @@ import re
 from decimal import Decimal
 from typing import Any
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, status # pyright: ignore[reportMissingImports]
-
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.orm import Session
 
@@ -39,10 +38,14 @@ SKILLS = [
     "machine learning", "deep learning", "data analysis", "data visualization",
     "natural language processing", "project management", "javascript", "typescript",
     "node.js", "react", "fastapi", "flask", "django", "python", "sql", "mysql",
-    "postgresql", "mongodb", "html", "css", "docker", "kubernetes", "aws", "azure",
-    "google cloud", "git", "github", "rest api", "linux", "excel", "power bi",
-    "tableau", "pandas", "numpy", "scikit-learn", "java", "c++", "c#", "pytest",
-    "selenium", "terraform", "redis", "communication", "agile", "scrum",
+    "postgresql", "mongodb", "html5", "css3", "html", "css", "docker", "kubernetes",
+    "aws", "azure", "google cloud", "git", "github", "rest api", "graphql", "linux",
+    "excel", "power bi", "tableau", "pandas", "numpy", "scikit-learn", "java", "c++",
+    "c#", "pytest", "selenium", "terraform", "redis", "communication", "agile", "scrum",
+    "spring boot", "next.js", "vue.js", "angular", "tailwind css", "jest", "cypress",
+    "kafka", "gcp", "github actions", "gitlab", "jenkins", "prometheus", "grafana",
+    "figma", "design systems", "user research", "prototyping", "rabbitmq",
+    "cloudformation", "bash", "networking", "zustand", "redux",
 ]
 CERTIFICATIONS = [
     "aws certified solutions architect", "aws certified developer",
@@ -53,7 +56,9 @@ CERTIFICATIONS = [
 ALIASES = {
     "js": "javascript", "node": "node.js", "k8s": "kubernetes",
     "ml": "machine learning", "nlp": "natural language processing",
-    "restful api": "rest api", "amazon web services": "aws",
+    "rest apis": "rest api", "restful apis": "rest api", "restful api": "rest api",
+    "amazon web services": "aws", "google cloud platform": "google cloud",
+    "html5": "html", "css3": "css",
     "microsoft azure": "microsoft azure",
 }
 
@@ -61,7 +66,7 @@ ALIASES = {
 def normalize_text(value: str) -> str:
     """Remove HTML/control characters, normalize bullets/aliases and whitespace."""
     value = html.unescape(value)
-    value = re.sub(r"(?is)<(script|style).*?>.*?</\\1>", " ", value)
+    value = re.sub(r"(?is)<(script|style)\b.*?>.*?</\1>", " ", value)
     value = re.sub(r"(?s)<[^>]+>", " ", value)
     value = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", value)
     value = value.replace("•", " ").replace("●", " ").replace("▪", " ")
@@ -217,12 +222,15 @@ router = APIRouter(prefix="/api/analyzer", tags=["analyzer"])
 
 
 @router.post("/analyze", status_code=status.HTTP_201_CREATED)
-def analyze_and_save(payload: AnalyzeRequest, db: Session = Depends(get_db_session)):
-    """Analyze and persist an analysis. DB failures return a generic 500 error."""
+def analyze_and_save(payload: AnalyzeRequest, request: Request, db: Session = Depends(get_db_session)):
+    """Analyze and persist an analysis owned by the signed-in user. DB failures return a generic 500."""
+    # main.py's SessionMiddleware puts the session in the ASGI scope; the standalone
+    # `analyzer:app` has none, so read it defensively instead of request.session.
+    user_id = (request.scope.get("session") or {}).get("user_id")
     try:
         result = analyze_resume(payload.resume_text, payload.jd_text)
         result["region_filter"] = payload.region_filter
-        row = ResumeAnalyzer(**to_db_row(result))
+        row = ResumeAnalyzer(**to_db_row(result), user_id=user_id)
         db.add(row)
         db.commit()
         db.refresh(row)

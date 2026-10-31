@@ -1,36 +1,56 @@
-"""Database configuration and SQLAlchemy model for Jobnex MVP-2.
+"""Database configuration and SQLAlchemy models for Jobnex MVP-2.
 
-Secrets are read from environment variables. Set DB_PASSWORD before running;
-do not commit credentials to source control.
+Secrets are read from environment variables (or a local ``.env`` file that is
+git-ignored). Nothing secret is hard-coded here.
+
+Required:   DB_PASSWORD            (or a full DATABASE_URL)
+Optional:   DB_HOST (127.0.0.1)  DB_PORT (3306)  DB_USER (root)  DB_NAME (jobnex)
 """
 import logging
 import os
 from contextlib import contextmanager
 from functools import lru_cache
+from pathlib import Path
 
-from sqlalchemy import Boolean, DateTime, Integer, Numeric, String, Text, TIMESTAMP, create_engine, func
+from sqlalchemy import (
+    Boolean, Integer, Numeric, String, Text, TIMESTAMP, create_engine, func, inspect, text,
+)
 from sqlalchemy.dialects.mysql import JSON as MySQLJSON, LONGTEXT
+from sqlalchemy.engine import URL
 from sqlalchemy.orm import DeclarativeBase, Session, mapped_column, Mapped, sessionmaker
 
-from urllib.parse import quote_plus
+try:  # python-dotenv is optional; real environment variables always win.
+    from dotenv import load_dotenv  # type: ignore
 
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
+    _HERE = Path(__file__).resolve().parent
+    load_dotenv(_HERE.parent / ".env", override=False)  # <project>/.env
+    load_dotenv(_HERE / ".env", override=False)         # <project>/backend/.env
+except ImportError:  # pragma: no cover
     pass
 
 logger = logging.getLogger(__name__)
 
-DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
-DB_PORT = int(os.getenv("DB_PORT", "3306"))
-DB_USER = os.getenv("DB_USER", "root")
-DB_NAME = os.getenv("DB_NAME", "jobnex")
-DB_PASSWORD = os.getenv("DB_PASSWORD")
-DB_URL = os.getenv("DATABASE_URL") or (
-    f"mysql+mysqlconnector://{DB_USER}:{quote_plus(DB_PASSWORD)}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-    if DB_PASSWORD is not None else None
-)
+
+def _build_db_url():
+    """Return a SQLAlchemy URL (or string) from the environment, or None if not configured."""
+    explicit = os.getenv("DATABASE_URL")
+    if explicit:
+        return explicit
+    password = os.getenv("DB_PASSWORD")
+    if password is None:
+        return None
+    # URL.create escapes special characters in the password (@, :, / ...) for us.
+    return URL.create(
+        "mysql+mysqlconnector",
+        username=os.getenv("DB_USER", "root"),
+        password=password,
+        host=os.getenv("DB_HOST", "127.0.0.1"),
+        port=int(os.getenv("DB_PORT", "3306")),
+        database=os.getenv("DB_NAME", "jobnex"),
+    )
+
+
+DB_URL = _build_db_url()
 
 
 class Base(DeclarativeBase):
@@ -42,6 +62,9 @@ class ResumeAnalyzer(Base):
     __tablename__ = "resume_analyzer"
 
     analysis_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # Owner of the analysis (users.id). Nullable so rows created before this column existed survive.
+    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    job_description_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     resume_text: Mapped[str] = mapped_column(LONGTEXT, nullable=False)
     jd_text: Mapped[str] = mapped_column(LONGTEXT, nullable=False)
     created_at: Mapped[object] = mapped_column(
@@ -63,12 +86,35 @@ class ResumeAnalyzer(Base):
     privacy_setting: Mapped[str] = mapped_column(String(20), nullable=False, default="private", server_default="private")
 
 
+# ---------------------------------------------------------------------------
+# Lightweight schema patching.
+# Base.metadata.create_all() creates missing TABLES but never adds columns to a table that
+# already exists. These patches add the columns introduced during frontend integration so an
+# existing database keeps working without a manual migration. Use Alembic for anything bigger.
+# ---------------------------------------------------------------------------
+COLUMN_PATCHES: dict[str, dict[str, str]] = {
+    "resume_analyzer": {
+        "user_id": "INT NULL",
+        "job_description_id": "INT NULL",
+    },
+    "jobs": {
+        "job_type": "VARCHAR(50) NULL",
+        "experience_level": "VARCHAR(30) NULL",
+        "skills": "TEXT NULL",
+        "certifications": "VARCHAR(200) NULL",
+    },
+    "recruiter_jobs": {"is_demo": "BOOLEAN NOT NULL DEFAULT 0"},
+    "recruiter_candidates": {"is_demo": "BOOLEAN NOT NULL DEFAULT 0"},
+}
+
+
 @lru_cache(maxsize=1)
 def get_engine():
     """Return the process-wide engine; raises clearly if DB_PASSWORD/URL is missing."""
     if not DB_URL:
         raise RuntimeError(
-            "Database credentials are not configured. Set DB_PASSWORD or DATABASE_URL."
+            "Database credentials are not configured. Set DB_PASSWORD or DATABASE_URL "
+            "(see .env.example)."
         )
     try:
         return create_engine(
@@ -112,10 +158,27 @@ def get_db_session():
         session.close()
 
 
+def ensure_columns() -> None:
+    """Add any COLUMN_PATCHES columns that are missing from already-existing tables."""
+    engine = get_engine()
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    with engine.begin() as connection:
+        for table, columns in COLUMN_PATCHES.items():
+            if table not in existing_tables:
+                continue  # create_all just made it with every column
+            present = {col["name"] for col in inspector.get_columns(table)}
+            for name, ddl in columns.items():
+                if name not in present:
+                    connection.execute(text(f"ALTER TABLE `{table}` ADD COLUMN `{name}` {ddl}"))
+                    logger.info("Added missing column %s.%s", table, name)
+
+
 def init_db():
-    """Create mapped tables that do not yet exist (use migrations for production changes)."""
+    """Create mapped tables that do not yet exist, then patch missing columns."""
     try:
         Base.metadata.create_all(bind=get_engine())
+        ensure_columns()
         logger.info("Database tables verified/created")
     except Exception:
         logger.exception("Database initialization failed")

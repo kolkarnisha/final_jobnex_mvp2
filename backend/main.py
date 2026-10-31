@@ -1,10 +1,12 @@
 """Jobnex MVP-2 backend entry point.
 
 Run (dev):   uvicorn main:app --reload      or      python main.py
+Then open:   http://127.0.0.1:8000/   (FastAPI also serves the ../frontend folder, so the browser
+             talks to the API on the SAME origin - no CORS problems, session cookie just works)
 Run (prod):  APP_ENV=production uvicorn main:app --host 0.0.0.0 --port 8000
 
-Layering: routes (this file / analyzer.py) -> services (analyzer.py, ai_analyzer.py,
-helpers below) -> models (database.py + the small User/Job models below).
+Layering: routes (this file / analyzer.py) -> services (job_service.py, analyzer.py,
+ai_analyzer.py, helpers below) -> SQLAlchemy models (database.py and this module).
 
 Environment variables
 ---------------------
@@ -14,15 +16,18 @@ DB_PASSWORD or DATABASE_URL (+ DB_HOST, DB_PORT, DB_USER, DB_NAME)   see databas
 SESSION_SECRET_KEY    required in production; random per-process key in development
 SESSION_MAX_AGE       session lifetime in seconds (default 7 days)
 CORS_ORIGINS          comma-separated explicit origins (required in production)
-FRONTEND_URL          where Google sign-in redirects after success
+FRONTEND_URL          where Google sign-in redirects after success (default http://localhost:8000/login.html)
+FRONTEND_DIR          folder with the HTML/JS/CSS to serve (default ../frontend; set empty to disable)
+SEED_SAMPLE_JOBS      1/0 - insert sample jobs when the jobs table is empty (default 1 outside production)
 ANTHROPIC_API_KEY     enables /api/chat; ANTHROPIC_MODEL overrides the model
 GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REDIRECT_URI    Google OAuth
 SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASSWORD / SMTP_FROM    welcome emails
 
 Error format (every non-2xx response):  {"error": "message", "code": "ERROR_CODE"}
 
-Extra pip dependencies beyond the existing files: itsdangerous (sessions),
-authlib + httpx (Google OAuth), anthropic (chat), uvicorn.
+Pip dependencies: see ../requirements.txt (python-multipart + pypdf + python-docx =
+job-description uploads; itsdangerous = sessions; authlib + httpx + cryptography = Google OAuth;
+anthropic = optional AI; python-dotenv = .env loading).
 """
 import hashlib
 import hmac
@@ -32,18 +37,26 @@ import os
 import re
 import secrets
 import smtplib
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import date
 from email.message import EmailMessage
 from functools import lru_cache
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import uvicorn # type: ignore
-from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request # type: ignore
+from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, Request, UploadFile # type: ignore
 from fastapi.exceptions import RequestValidationError # type: ignore
 from fastapi.responses import JSONResponse, RedirectResponse # type: ignore
-from pydantic import BaseModel, Field, StringConstraints, field_validator
-from sqlalchemy import TIMESTAMP, Integer, String, Text, func, select
+from fastapi.staticfiles import StaticFiles # type: ignore
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+from sqlalchemy import (
+    Boolean, JSON, Date, Float, ForeignKey, TIMESTAMP, Integer, String, Text,
+    cast, delete, func, or_, select, update,
+)
+from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Mapped, Session, mapped_column
 from starlette.concurrency import run_in_threadpool # type: ignore
@@ -51,19 +64,27 @@ from starlette.exceptions import HTTPException as StarletteHTTPException # type:
 from starlette.middleware.base import BaseHTTPMiddleware # type: ignore
 from starlette.middleware.cors import CORSMiddleware # type: ignore
 from starlette.middleware.sessions import SessionMiddleware # type: ignore
-# from fastapi.staticfiles import StaticFiles
-
-# app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
-
 
 try:
-    from database import Base, ResumeAnalyzer, get_db_session, init_db
-    from analyzer import REGIONS, router as analyzer_router
+    from database import Base, ResumeAnalyzer, get_db_session, get_session, init_db
+    from analyzer import REGIONS, analyze_resume, router as analyzer_router, to_db_row
     from ai_analyzer import generate_interview_questions, suggest_courses
+    from job_service import (
+        MAX_JOB_TEXT_LENGTH,
+        MAX_UPLOAD_SIZE,
+        extract_job_details,
+        extract_uploaded_text,
+    )
 except ImportError:  # package import
-    from .database import Base, ResumeAnalyzer, get_db_session, init_db
-    from .analyzer import REGIONS, router as analyzer_router
+    from .database import Base, ResumeAnalyzer, get_db_session, get_session, init_db
+    from .analyzer import REGIONS, analyze_resume, router as analyzer_router, to_db_row
     from .ai_analyzer import generate_interview_questions, suggest_courses
+    from .job_service import (
+        MAX_JOB_TEXT_LENGTH,
+        MAX_UPLOAD_SIZE,
+        extract_job_details,
+        extract_uploaded_text,
+    )
 
 try:  # Google OAuth is optional; /api/auth/google/* returns 501 without it.
     from authlib.integrations.starlette_client import OAuth, OAuthError # type: ignore
@@ -87,6 +108,8 @@ class Settings:
     session_max_age: int
     cors_origins: tuple[str, ...]
     frontend_url: str
+    frontend_dir: str | None
+    seed_sample_jobs: bool
     anthropic_api_key: str | None
     anthropic_model: str
     google_client_id: str | None
@@ -127,9 +150,14 @@ def get_settings() -> Settings:
     origins_raw = os.getenv("CORS_ORIGINS")
     if not origins_raw and production:
         raise RuntimeError("CORS_ORIGINS must be set when APP_ENV=production")
+    # Only needed when the frontend is served from a DIFFERENT origin (Live Server, Vite, ...).
+    # When FastAPI serves the frontend itself (default) the browser never makes a cross-origin call.
+    dev_origins = ",".join(
+        f"http://{host}:{port}" for host in ("localhost", "127.0.0.1") for port in (8000, 3000, 5173, 5500)
+    )
     origins = tuple(
         o.strip().rstrip("/")
-        for o in (origins_raw or "http://localhost:3000,http://localhost:5173").split(",")
+        for o in (origins_raw or dev_origins).split(",")
         if o.strip()
     )
     if "*" in origins:
@@ -143,7 +171,13 @@ def get_settings() -> Settings:
         session_secret=secret,
         session_max_age=int(os.getenv("SESSION_MAX_AGE", str(7 * 24 * 3600))),
         cors_origins=origins,
-        frontend_url=os.getenv("FRONTEND_URL", origins[0] if origins else "http://localhost:3000"),
+        frontend_url=os.getenv("FRONTEND_URL", "http://localhost:8000/login.html"),
+        frontend_dir=(
+            os.getenv("FRONTEND_DIR")
+            if os.getenv("FRONTEND_DIR") is not None
+            else str(Path(__file__).resolve().parent.parent / "frontend")
+        ) or None,
+        seed_sample_jobs=os.getenv("SEED_SAMPLE_JOBS", "0" if production else "1").strip().lower() in {"1", "true", "yes"},
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
         anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-haiku-5-5"),
         google_client_id=os.getenv("GOOGLE_CLIENT_ID"),
@@ -185,8 +219,141 @@ class Job(Base):
     location: Mapped[str | None] = mapped_column(String(200), nullable=True)
     region: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
     description: Mapped[str] = mapped_column(Text, nullable=False)
+    job_type: Mapped[str | None] = mapped_column(String(50), nullable=True)           # Full-time / Contract ...
+    experience_level: Mapped[str | None] = mapped_column(String(30), nullable=True)   # fresher|junior|mid|senior
+    skills: Mapped[str | None] = mapped_column(Text, nullable=True)                   # space separated keywords
+    certifications: Mapped[str | None] = mapped_column(String(200), nullable=True)    # comma separated: aws,pmp
     created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[object] = mapped_column(TIMESTAMP, server_default=func.current_timestamp(), nullable=False)
+
+
+class JobApplication(Base):
+    """A job the signed-in user queued/applied to; drives the Dashboard and Applications pages."""
+    __tablename__ = "job_applications"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    job_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    company: Mapped[str] = mapped_column(String(200), nullable=False)
+    job_title: Mapped[str] = mapped_column(String(200), nullable=False)
+    job_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="applied", server_default="applied")
+    created_at: Mapped[object] = mapped_column(TIMESTAMP, server_default=func.current_timestamp(), nullable=False)
+    updated_at: Mapped[object] = mapped_column(
+        TIMESTAMP, server_default=func.current_timestamp(), onupdate=func.current_timestamp(), nullable=False
+    )
+
+
+class UploadedJobDescription(Base):
+    """A user's parsed JD, retained as the source for ATS match analyses."""
+    __tablename__ = "uploaded_job_descriptions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    company: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    location: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    job_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    experience: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    required_skills: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    preferred_skills: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    certifications: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    keywords: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    responsibilities: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    raw_text: Mapped[str] = mapped_column(LONGTEXT, nullable=False)
+    source_file_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[object] = mapped_column(
+        TIMESTAMP, server_default=func.current_timestamp(), nullable=False
+    )
+
+
+class RecruiterJob(Base):
+    """Recruiter-owned job requisition, separate from public job-board postings."""
+    __tablename__ = "recruiter_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
+    company: Mapped[str] = mapped_column(String(200), nullable=False)
+    department: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    location: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="Active")
+    is_demo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    experience_level: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    required_skills: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[object] = mapped_column(
+        TIMESTAMP, server_default=func.current_timestamp(), nullable=False
+    )
+    updated_at: Mapped[object] = mapped_column(
+        TIMESTAMP, server_default=func.current_timestamp(), onupdate=func.current_timestamp(), nullable=False
+    )
+
+
+class RecruiterCandidate(Base):
+    """Candidate profile and current pipeline state, owned by a recruiter account."""
+    __tablename__ = "recruiter_candidates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    job_id: Mapped[int | None] = mapped_column(
+        ForeignKey("recruiter_jobs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    name: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    location: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    target_job_title: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    stage: Mapped[str] = mapped_column(String(30), nullable=False, default="Applied", index=True)
+    is_demo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    ats_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    experience: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    experience_years: Mapped[float | None] = mapped_column(Float, nullable=True, index=True)
+    skills: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    missing_skills: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    resume_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    applied_at: Mapped[object | None] = mapped_column(Date, nullable=True)
+    hired_at: Mapped[object | None] = mapped_column(Date, nullable=True)
+    created_at: Mapped[object] = mapped_column(
+        TIMESTAMP, server_default=func.current_timestamp(), nullable=False
+    )
+    updated_at: Mapped[object] = mapped_column(
+        TIMESTAMP, server_default=func.current_timestamp(), onupdate=func.current_timestamp(), nullable=False
+    )
+
+
+class CandidateNote(Base):
+    """Append-only recruiter feedback attached to a candidate dossier."""
+    __tablename__ = "recruiter_candidate_notes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    candidate_id: Mapped[int] = mapped_column(
+        ForeignKey("recruiter_candidates.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    author: Mapped[str] = mapped_column(String(100), nullable=False)
+    role: Mapped[str] = mapped_column(String(100), nullable=False, default="Recruitment Lead")
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    rating: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[object] = mapped_column(
+        TIMESTAMP, server_default=func.current_timestamp(), nullable=False
+    )
+
+
+class CandidateStageHistory(Base):
+    """Audit trail for candidate movement through the recruiter pipeline."""
+    __tablename__ = "recruiter_candidate_stage_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    candidate_id: Mapped[int] = mapped_column(
+        ForeignKey("recruiter_candidates.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    previous_stage: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    stage: Mapped[str] = mapped_column(String(30), nullable=False)
+    changed_by: Mapped[int] = mapped_column(Integer, nullable=False)
+    changed_at: Mapped[object] = mapped_column(
+        TIMESTAMP, server_default=func.current_timestamp(), nullable=False
+    )
 
 
 # =============================================================================
@@ -232,15 +399,11 @@ def current_user(request: Request, db: Session = Depends(get_db_session)) -> Use
 
 
 def scope_to_user(stmt, user: User):
-    """Restrict a resume_analyzer statement to the caller's rows.
+    """Restrict a resume_analyzer statement to the caller's own rows (ownership enforcement).
 
-    TODO(ownership): resume_analyzer has no user_id column yet, so this is a no-op and every
-    authenticated user can see/modify every analysis. After adding user_id (and setting it in
-    analyzer.analyze_and_save), change the body to:
-        return stmt.where(ResumeAnalyzer.user_id == user.id)
-    Every analysis route below already calls this function.
+    Rows created before the user_id column existed have user_id NULL and are visible to nobody.
     """
-    return stmt
+    return stmt.where(ResumeAnalyzer.user_id == user.id)
 
 
 def send_email(to: str, subject: str, body: str) -> None:
@@ -282,6 +445,7 @@ def _application_summary(row: ResumeAnalyzer) -> dict[str, Any]:
     """List-view serialization. resume_text/jd_text are deliberately omitted."""
     return {
         "analysis_id": row.analysis_id,
+        "job_description_id": row.job_description_id,
         "match_score": float(row.match_score) if row.match_score is not None else None,
         "matched_skills": row.matched_skills or [],
         "missing_skills": row.missing_skills or [],
@@ -385,6 +549,12 @@ def logout(request: Request):
     return {"status": "logged_out"}
 
 
+@auth_router.get("/providers")
+def auth_providers():
+    """Which sign-in methods are configured (public). Response 200: {"password": true, "google": false}"""
+    return {"password": True, "google": oauth is not None}
+
+
 @auth_router.get("/me")
 def me(user: User = Depends(current_user)):
     """Current user. Response 200: {"user": {"id": 1, "email": "a@b.com", "name": "Asha"}}"""
@@ -466,6 +636,10 @@ class JobCreate(BaseModel):
     location: str | None = Field(default=None, max_length=200)
     region: str | None = None
     description: str = Field(min_length=1, max_length=50_000)
+    job_type: str | None = Field(default=None, max_length=50)
+    experience_level: Literal["fresher", "junior", "mid", "senior"] | None = None
+    skills: str | None = Field(default=None, max_length=2000)
+    certifications: str | None = Field(default=None, max_length=200)
 
     @field_validator("region")
     @classmethod
@@ -482,6 +656,8 @@ def _job_json(job: Job) -> dict[str, Any]:
     return {
         "id": job.id, "title": job.title, "company": job.company, "location": job.location,
         "region": job.region, "description": job.description,
+        "job_type": job.job_type, "experience_level": job.experience_level,
+        "skills": job.skills, "certifications": job.certifications,
         "created_at": job.created_at.isoformat() if job.created_at else None,
     }
 
@@ -536,6 +712,406 @@ def create_job(payload: JobCreate, user: User = Depends(current_user), db: Sessi
     db.commit()
     db.refresh(job)
     return _job_json(job)
+
+
+# =============================================================================
+# /api/job - job-description upload, structured extraction, and resume matching
+# =============================================================================
+job_router = APIRouter(prefix="/api/job", tags=["job-upload"])
+
+
+class JobParseRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    text: str = Field(min_length=1, max_length=MAX_JOB_TEXT_LENGTH)
+    file_name: str | None = Field(default=None, max_length=255)
+
+
+class JobMatchDetails(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, str_strip_whitespace=True, extra="ignore")
+
+    job_id: int | None = Field(default=None, alias="jobId", ge=1)
+    raw_text: str | None = Field(default=None, alias="rawText", max_length=MAX_JOB_TEXT_LENGTH)
+    source_file: str | None = Field(default=None, alias="sourceFile", max_length=255)
+    required_skills: list[str] = Field(default_factory=list, alias="requiredSkills", max_length=100)
+    preferred_skills: list[str] = Field(default_factory=list, alias="preferredSkills", max_length=100)
+    keywords: list[str] = Field(default_factory=list, max_length=100)
+
+
+class JobMatchRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    resume_text: str = Field(min_length=1, max_length=200_000)
+    job_details: JobMatchDetails
+
+
+def _job_description_json(row: UploadedJobDescription) -> dict[str, Any]:
+    return {
+        "jobId": row.id,
+        "title": row.title,
+        "company": row.company,
+        "location": row.location,
+        "jobType": row.job_type,
+        "experience": row.experience,
+        "requiredSkills": row.required_skills or [],
+        "preferredSkills": row.preferred_skills or [],
+        "certifications": row.certifications or [],
+        "keywords": row.keywords or [],
+        "responsibilities": row.responsibilities or [],
+        "rawText": row.raw_text,
+        "sourceFile": row.source_file_name,
+        "createdAt": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+def _save_job_description(
+    db: Session,
+    user: User,
+    text: str,
+    file_name: str | None,
+) -> dict[str, Any]:
+    details = extract_job_details(text, file_name)
+    row = UploadedJobDescription(
+        user_id=user.id,
+        title=details["title"],
+        company=details["company"],
+        location=details["location"],
+        job_type=details["jobType"],
+        experience=details["experience"],
+        required_skills=details["requiredSkills"],
+        preferred_skills=details["preferredSkills"],
+        certifications=details["certifications"],
+        keywords=details["keywords"],
+        responsibilities=details["responsibilities"],
+        raw_text=details["rawText"],
+        source_file_name=details["sourceFile"],
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _job_description_json(row)
+
+
+@job_router.post("/parse", status_code=201)
+def parse_job_description(
+    payload: JobParseRequest,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db_session),
+):
+    """Extract and persist structured requirements from pasted job-description text."""
+    try:
+        return _save_job_description(db, user, payload.text, payload.file_name)
+    except ValueError as exc:
+        db.rollback()
+        raise api_error(422, str(exc), "INVALID_JOB_DESCRIPTION") from exc
+    except Exception:
+        db.rollback()
+        logger.exception("Could not save parsed job description")
+        raise api_error(500, "Could not save job description", "JOB_DESCRIPTION_SAVE_FAILED")
+
+
+@job_router.post("/upload", status_code=201)
+def upload_job_description(
+    file: UploadFile = File(...),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db_session),
+):
+    """Extract and persist a PDF, DOCX, or TXT job description (maximum 10 MB)."""
+    try:
+        content = file.file.read(MAX_UPLOAD_SIZE + 1)
+        if len(content) > MAX_UPLOAD_SIZE:
+            raise api_error(413, "Uploaded file must be 10 MB or smaller", "UPLOAD_TOO_LARGE")
+        text_content = extract_uploaded_text(file.filename or "", content)
+        return _save_job_description(db, user, text_content, file.filename)
+    except HTTPException:
+        db.rollback()
+        raise
+    except ValueError as exc:
+        db.rollback()
+        raise api_error(422, str(exc), "INVALID_JOB_FILE") from exc
+    except Exception:
+        db.rollback()
+        logger.exception("Could not process uploaded job description")
+        raise api_error(500, "Could not process job description", "JOB_UPLOAD_FAILED")
+    finally:
+        file.file.close()
+
+
+@job_router.get("/{job_id}")
+def get_uploaded_job_description(
+    job_id: int,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db_session),
+):
+    row = db.execute(
+        select(UploadedJobDescription).where(
+            UploadedJobDescription.id == job_id,
+            UploadedJobDescription.user_id == user.id,
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise api_error(404, "Job description not found", "JOB_DESCRIPTION_NOT_FOUND")
+    return _job_description_json(row)
+
+
+@analyzer_router.post("/job-match", status_code=201)
+def analyze_job_match(
+    payload: JobMatchRequest,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db_session),
+):
+    """Persist ATS match details using the shared resume analyzer and parsed job record."""
+    details = payload.job_details
+    job_id = details.job_id
+    job = None
+    if job_id is not None:
+        try:
+            parsed_job_id = int(job_id)
+        except (TypeError, ValueError) as exc:
+            raise api_error(422, "jobId must be a valid job identifier", "INVALID_JOB_ID") from exc
+        job = db.execute(
+            select(UploadedJobDescription).where(
+                UploadedJobDescription.id == parsed_job_id,
+                UploadedJobDescription.user_id == user.id,
+            )
+        ).scalar_one_or_none()
+        if job is None:
+            raise api_error(404, "Job description not found", "JOB_DESCRIPTION_NOT_FOUND")
+    else:
+        raw_text = details.raw_text
+        if not isinstance(raw_text, str) or not raw_text.strip():
+            raise api_error(422, "job_details.rawText is required", "INVALID_JOB_DESCRIPTION")
+        try:
+            serialized_job = _save_job_description(db, user, raw_text, details.source_file)
+            job = db.get(UploadedJobDescription, serialized_job["jobId"])
+        except ValueError as exc:
+            db.rollback()
+            raise api_error(422, str(exc), "INVALID_JOB_DESCRIPTION") from exc
+
+    assert job is not None
+    try:
+        analysis = analyze_resume(payload.resume_text, job.raw_text)
+    except ValueError as exc:
+        raise api_error(422, str(exc), "INVALID_ANALYSIS_INPUT") from exc
+    try:
+        row = ResumeAnalyzer(
+            **to_db_row(analysis),
+            user_id=user.id,
+            job_description_id=job.id,
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+    except Exception:
+        db.rollback()
+        logger.exception("Could not save job match analysis")
+        raise api_error(500, "Could not save job match analysis", "JOB_MATCH_SAVE_FAILED")
+
+    required = list(job.required_skills or [])
+    preferred = list(job.preferred_skills or [])
+    all_skills = list(dict.fromkeys(required + preferred))
+    matched_canonical = {str(skill).lower() for skill in analysis["matched_skills"]}
+    resume_lower = analysis["resume_text"].lower()
+
+    def skill_is_present(skill: str) -> bool:
+        if skill.lower() in matched_canonical:
+            return True
+        pattern = rf"(?<![a-z0-9+#]){re.escape(skill.lower())}(?![a-z0-9+#])"
+        return bool(re.search(pattern, resume_lower))
+
+    skills_found = [skill for skill in all_skills if skill_is_present(skill)]
+    skills_missing = [skill for skill in all_skills if not skill_is_present(skill)]
+    critical_missing = [skill for skill in required if not skill_is_present(skill)]
+
+    matched_keywords = [
+        keyword for keyword in (job.keywords or [])
+        if re.search(rf"(?<![a-z0-9+#]){re.escape(keyword.lower())}(?![a-z0-9+#])",
+                     analysis["resume_text"].lower())
+    ]
+    missing_keywords = [keyword for keyword in (job.keywords or []) if keyword not in matched_keywords]
+    keyword_percentage = round(len(matched_keywords) / len(job.keywords) * 100) if job.keywords else 0
+    skill_percentage = round(len(skills_found) / len(all_skills) * 100) if all_skills else 0
+    score = float(analysis["match_score"])
+
+    tailoring_suggestions = []
+    if critical_missing:
+        tailoring_suggestions.append({
+            "id": "missing-required-skills",
+            "category": "Skill Improvements",
+            "title": f"Address required skills: {', '.join(critical_missing[:3])}",
+            "description": "Include these skills only when supported by your actual experience.",
+            "actionableSnippet": "Add relevant project or work evidence for each required skill you can substantiate.",
+            "priority": "High",
+            "estimatedImpactPoints": min(20, len(critical_missing) * 4),
+        })
+    if missing_keywords:
+        tailoring_suggestions.append({
+            "id": "missing-keywords",
+            "category": "ATS Optimization Tips",
+            "title": "Use relevant job-description language",
+            "description": "Work accurate role keywords into experience and project bullets where they fit naturally.",
+            "actionableSnippet": ", ".join(missing_keywords[:6]),
+            "priority": "Medium",
+            "estimatedImpactPoints": min(12, len(missing_keywords) * 2),
+        })
+    tailoring_suggestions.append({
+        "id": "quantify-impact",
+        "category": "Content Improvements",
+        "title": "Quantify your impact",
+        "description": "Add measurable outcomes to relevant experience and project bullets.",
+        "actionableSnippet": "Describe the result and quantify it with a credible metric when available.",
+        "priority": "Low",
+        "estimatedImpactPoints": 5,
+    })
+    high_priority = [{
+        "id": "required-skills",
+        "level": "High Priority",
+        "title": f"Address missing required skills: {', '.join(critical_missing[:3])}",
+        "detail": "Add truthful evidence of relevant experience or projects; do not claim skills you do not have.",
+        "pointsBoost": min(20, len(critical_missing) * 4),
+    }] if critical_missing else []
+    medium_priority = [{
+        "id": "keywords",
+        "level": "Medium Priority",
+        "title": "Add matching keywords where accurate",
+        "detail": ", ".join(missing_keywords[:5]) or "Clarify the most relevant project and experience details.",
+        "pointsBoost": min(12, len(missing_keywords) * 2),
+    }]
+    potential_boost = sum(item["pointsBoost"] for item in high_priority + medium_priority)
+
+    return {
+        "analysisId": row.analysis_id,
+        "jobId": job.id,
+        "matchScore": score,
+        "scoreLabel": "Strong Match" if score >= 80 else (
+            "Moderate Alignment" if score >= 60 else "Critical Gaps Detected"
+        ),
+        "keywordMatch": {
+            "matched": matched_keywords,
+            "missing": missing_keywords,
+            "matchPercentage": keyword_percentage,
+            "totalKeywords": len(job.keywords or []),
+        },
+        "skillGap": {
+            "skillsFound": skills_found,
+            "skillsMissing": skills_missing,
+            "criticalMissingSkills": critical_missing,
+            "coveragePercentage": skill_percentage,
+        },
+        "tailoringSuggestions": tailoring_suggestions,
+        "priorityMeter": {
+            "high": high_priority,
+            "medium": medium_priority,
+            "low": [],
+            "potentialScoreBoost": min(100 - score, potential_boost),
+        },
+        "visualizations": {
+            "atsScore": score,
+            "keywordMatchPct": keyword_percentage,
+            "skillCoveragePct": skill_percentage,
+            "passingScoreBenchmark": 75,
+        },
+        "analyzedAt": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+# =============================================================================
+# /api/job-applications - the user's application tracker (Dashboard + Applications pages)
+# =============================================================================
+job_applications_router = APIRouter(prefix="/api/job-applications", tags=["job-applications"])
+
+ApplicationStatus = Literal["applied", "interview", "offer", "rejected", "withdrawn"]
+
+
+class JobApplicationCreate(BaseModel):
+    company: str = Field(min_length=1, max_length=200)
+    job_title: str = Field(min_length=1, max_length=200)
+    job_id: int | None = Field(default=None, ge=1)
+    job_url: str | None = Field(default=None, max_length=500)
+
+
+class JobApplicationStatusUpdate(BaseModel):
+    status: ApplicationStatus
+
+
+def _job_application_json(row: JobApplication) -> dict[str, Any]:
+    return {
+        "id": row.id, "job_id": row.job_id, "company": row.company, "job_title": row.job_title,
+        "job_url": row.job_url, "status": row.status,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+def _get_job_application(db: Session, application_id: int, user: User) -> JobApplication:
+    row = db.execute(
+        select(JobApplication).where(JobApplication.id == application_id, JobApplication.user_id == user.id)
+    ).scalar_one_or_none()
+    if row is None:
+        raise api_error(404, "Application not found", "APPLICATION_NOT_FOUND")
+    return row
+
+
+@job_applications_router.get("")
+def list_job_applications(
+    limit: int = Query(default=200, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db_session),
+):
+    """The caller's tracked applications, newest first.
+
+    Response 200: {"items": [{"id": 1, "company": "...", "job_title": "...", "status": "applied", ...}],
+                   "total": 1, "limit": 200, "offset": 0}
+    """
+    base = select(JobApplication).where(JobApplication.user_id == user.id)
+    total = db.scalar(select(func.count()).select_from(base.subquery()))
+    rows = db.execute(base.order_by(JobApplication.created_at.desc(), JobApplication.id.desc())
+                      .limit(limit).offset(offset)).scalars()
+    return {"items": [_job_application_json(r) for r in rows], "total": total, "limit": limit, "offset": offset}
+
+
+@job_applications_router.post("", status_code=201)
+def create_job_application(payload: JobApplicationCreate, user: User = Depends(current_user),
+                           db: Session = Depends(get_db_session)):
+    """Queue/track an application.
+
+    Request:  {"company": "Acme", "job_title": "Backend Engineer", "job_id": 3, "job_url": null}
+    Response 201: application object.  Errors: 409 APPLICATION_EXISTS (same company + title)
+    """
+    duplicate = db.execute(select(JobApplication.id).where(
+        JobApplication.user_id == user.id,
+        JobApplication.company == payload.company,
+        JobApplication.job_title == payload.job_title,
+    )).first()
+    if duplicate:
+        raise api_error(409, "You already applied to this job", "APPLICATION_EXISTS")
+    row = JobApplication(user_id=user.id, **payload.model_dump())
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _job_application_json(row)
+
+
+@job_applications_router.patch("/{application_id}/status")
+def update_job_application_status(application_id: int, payload: JobApplicationStatusUpdate,
+                                  user: User = Depends(current_user), db: Session = Depends(get_db_session)):
+    """Request: {"status": "interview"}   Response 200: application object."""
+    row = _get_job_application(db, application_id, user)
+    row.status = payload.status
+    db.commit()
+    db.refresh(row)
+    return _job_application_json(row)
+
+
+@job_applications_router.delete("/{application_id}")
+def delete_job_application(application_id: int, user: User = Depends(current_user),
+                           db: Session = Depends(get_db_session)):
+    """Response 200: {"deleted": 1}"""
+    row = _get_job_application(db, application_id, user)
+    db.delete(row)
+    db.commit()
+    return {"deleted": application_id}
 
 
 # =============================================================================
@@ -805,22 +1381,930 @@ def set_privacy(analysis_id: int, payload: PrivacyUpdate, user: User = Depends(c
 
 
 # =============================================================================
+# /api/recruiter - recruiter requisitions, candidate pipeline, and reporting
+# =============================================================================
+recruiter_router = APIRouter(prefix="/api/recruiter", tags=["recruiter"])
+
+RecruiterJobStatus = Literal["Active", "Paused", "Archived"]
+CandidateStage = Literal[
+    "Applied", "Screening", "Interview", "Technical Round", "HR Round", "Offer", "Hired", "Rejected"
+]
+RECRUITER_STAGES = (
+    "Applied", "Screening", "Interview", "Technical Round", "HR Round", "Offer", "Hired"
+)
+
+
+class RecruiterJobCreate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    client_id: str | None = Field(default=None, alias="id", max_length=100)
+    title: str = Field(min_length=1, max_length=200)
+    company: str = Field(default="JOBNEX Core Platform", min_length=1, max_length=200)
+    department: str | None = Field(default=None, max_length=100)
+    location: str | None = Field(default=None, max_length=200)
+    status: RecruiterJobStatus = "Active"
+    experience_level: str | None = Field(default=None, alias="experienceLevel", max_length=100)
+    required_skills: list[str] | str = Field(default_factory=list, alias="requiredSkills")
+    description: str = Field(default="", max_length=50_000)
+
+    @field_validator("title", "company")
+    @classmethod
+    def _required_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be empty")
+        return value
+
+
+class RecruiterJobUpdate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    company: str | None = Field(default=None, min_length=1, max_length=200)
+    department: str | None = Field(default=None, max_length=100)
+    location: str | None = Field(default=None, max_length=200)
+    status: RecruiterJobStatus | None = None
+    experience_level: str | None = Field(default=None, alias="experienceLevel", max_length=100)
+    required_skills: list[str] | str | None = Field(default=None, alias="requiredSkills")
+    description: str | None = Field(default=None, max_length=50_000)
+
+    @field_validator("title", "company")
+    @classmethod
+    def _nonempty_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be empty")
+        return value
+
+
+class CandidateNoteInput(BaseModel):
+    author: str = Field(default="Recruitment Lead", min_length=1, max_length=100)
+    role: str = Field(default="Recruitment Lead", min_length=1, max_length=100)
+    text: str = Field(min_length=1, max_length=10_000)
+    rating: float | None = Field(default=None, ge=0, le=5)
+
+    @field_validator("text")
+    @classmethod
+    def _note_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("note text must not be empty")
+        return value
+
+
+class CandidateCreate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: str = Field(min_length=1, max_length=200)
+    email: str = Field(min_length=3, max_length=255)
+    phone: str | None = Field(default=None, max_length=50)
+    location: str | None = Field(default=None, max_length=200)
+    target_job_id: str | int | None = Field(default=None, alias="targetJobId")
+    target_job_title: str | None = Field(default=None, alias="targetJobTitle", max_length=200)
+    stage: CandidateStage = "Applied"
+    ats_score: float | None = Field(default=None, alias="atsScore", ge=0, le=100)
+    experience: str | None = Field(default=None, max_length=100)
+    skills: list[str] = Field(default_factory=list, max_length=100)
+    missing_skills: list[str] = Field(default_factory=list, alias="missingSkills", max_length=100)
+    resume_summary: str | None = Field(default=None, alias="resumeSummary", max_length=10_000)
+    source: str | None = Field(default=None, max_length=100)
+    applied_date: date | None = Field(default=None, alias="appliedDate")
+    interview_notes: list[CandidateNoteInput] = Field(
+        default_factory=list, alias="interviewNotes", max_length=100
+    )
+
+    @field_validator("name")
+    @classmethod
+    def _candidate_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("name must not be empty")
+        return value
+
+    @field_validator("email")
+    @classmethod
+    def _candidate_email(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not EMAIL_RE.match(normalized):
+            raise ValueError("email is not valid")
+        return normalized
+
+    @field_validator("skills", "missing_skills")
+    @classmethod
+    def _normalize_skill_list(cls, values: list[str]) -> list[str]:
+        return list(dict.fromkeys(value.strip() for value in values if value.strip()))
+
+
+class CandidateUpdate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    email: str | None = Field(default=None, min_length=3, max_length=255)
+    phone: str | None = Field(default=None, max_length=50)
+    location: str | None = Field(default=None, max_length=200)
+    target_job_id: str | int | None = Field(default=None, alias="targetJobId")
+    target_job_title: str | None = Field(default=None, alias="targetJobTitle", max_length=200)
+    stage: CandidateStage | None = None
+    ats_score: float | None = Field(default=None, alias="atsScore", ge=0, le=100)
+    experience: str | None = Field(default=None, max_length=100)
+    skills: list[str] | None = Field(default=None, max_length=100)
+    missing_skills: list[str] | None = Field(default=None, alias="missingSkills", max_length=100)
+    resume_summary: str | None = Field(default=None, alias="resumeSummary", max_length=10_000)
+    source: str | None = Field(default=None, max_length=100)
+    applied_date: date | None = Field(default=None, alias="appliedDate")
+
+    @field_validator("name")
+    @classmethod
+    def _candidate_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("name must not be empty")
+        return value
+
+
+class CandidateStageUpdate(BaseModel):
+    stage: CandidateStage
+
+
+class CandidateNoteCreate(BaseModel):
+    text: str = Field(min_length=1, max_length=10_000)
+    author: str | None = Field(default=None, max_length=100)
+    role: str = Field(default="Recruitment Lead", max_length=100)
+    rating: float | None = Field(default=None, ge=0, le=5)
+
+    @field_validator("text")
+    @classmethod
+    def _note_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("note text must not be empty")
+        return value
+
+
+class RecruiterDemoReset(BaseModel):
+    jobs: list[RecruiterJobCreate] = Field(max_length=100)
+    candidates: list[CandidateCreate] = Field(max_length=500)
+
+
+def _skills_list(value: list[str] | str | None) -> list[str]:
+    if isinstance(value, str):
+        values = value.split(",")
+    else:
+        values = value or []
+    return list(dict.fromkeys(item.strip() for item in values if item.strip()))[:100]
+
+
+def _experience_value(value: str | None) -> float | None:
+    if not value:
+        return None
+    match = re.search(r"\d+(?:\.\d+)?", value)
+    return float(match.group(0)) if match else None
+
+
+def _get_recruiter_job(db: Session, job_id: int, user: User) -> RecruiterJob:
+    row = db.execute(
+        select(RecruiterJob).where(RecruiterJob.id == job_id, RecruiterJob.user_id == user.id)
+    ).scalar_one_or_none()
+    if row is None:
+        raise api_error(404, "Recruiter job not found", "RECRUITER_JOB_NOT_FOUND")
+    return row
+
+
+def _get_recruiter_candidate(db: Session, candidate_id: int, user: User) -> RecruiterCandidate:
+    row = db.execute(
+        select(RecruiterCandidate).where(
+            RecruiterCandidate.id == candidate_id,
+            RecruiterCandidate.user_id == user.id,
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise api_error(404, "Candidate not found", "CANDIDATE_NOT_FOUND")
+    return row
+
+
+def _recruiter_job_json(
+    db: Session,
+    row: RecruiterJob,
+    applicant_count: int | None = None,
+) -> dict[str, Any]:
+    if applicant_count is None:
+        applicant_count = db.scalar(
+            select(func.count()).select_from(RecruiterCandidate).where(RecruiterCandidate.job_id == row.id)
+        )
+    return {
+        "id": str(row.id),
+        "title": row.title,
+        "company": row.company,
+        "department": row.department,
+        "location": row.location,
+        "status": row.status,
+        "applicantsCount": applicant_count or 0,
+        "createdDate": row.created_at.date().isoformat() if row.created_at else None,
+        "experienceLevel": row.experience_level,
+        "requiredSkills": row.required_skills or [],
+        "description": row.description,
+    }
+
+
+def _candidate_note_json(row: CandidateNote) -> dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "author": row.author,
+        "role": row.role,
+        "date": row.created_at.date().isoformat() if row.created_at else None,
+        "text": row.text,
+        "rating": row.rating,
+    }
+
+
+def _candidate_json(
+    row: RecruiterCandidate,
+    job_title: str | None,
+    notes: list[CandidateNote],
+) -> dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "name": row.name,
+        "email": row.email,
+        "phone": row.phone,
+        "location": row.location,
+        "targetJobId": str(row.job_id) if row.job_id is not None else None,
+        "targetJobTitle": row.target_job_title or job_title or "Software Engineer",
+        "stage": row.stage,
+        "atsScore": row.ats_score or 0,
+        "experience": row.experience or "",
+        "skills": row.skills or [],
+        "missingSkills": row.missing_skills or [],
+        "resumeSummary": row.resume_summary or "",
+        "appliedDate": row.applied_at.isoformat() if row.applied_at else None,
+        "source": row.source,
+        "interviewNotes": [_candidate_note_json(note) for note in notes],
+        "createdAt": row.created_at.isoformat() if row.created_at else None,
+        "updatedAt": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+def _candidate_list_json(db: Session, rows: list[RecruiterCandidate]) -> list[dict[str, Any]]:
+    if not rows:
+        return []
+    job_ids = {row.job_id for row in rows if row.job_id is not None}
+    candidate_ids = [row.id for row in rows]
+    jobs = db.execute(
+        select(RecruiterJob).where(
+            RecruiterJob.id.in_(job_ids),
+            RecruiterJob.user_id == rows[0].user_id,
+        )
+    ).scalars().all() if job_ids else []
+    job_titles = {job.id: job.title for job in jobs}
+    notes = db.execute(
+        select(CandidateNote)
+        .where(CandidateNote.candidate_id.in_(candidate_ids))
+        .order_by(CandidateNote.created_at.desc(), CandidateNote.id.desc())
+    ).scalars().all()
+    notes_by_candidate: dict[int, list[CandidateNote]] = defaultdict(list)
+    for note in notes:
+        notes_by_candidate[note.candidate_id].append(note)
+    return [
+        _candidate_json(row, job_titles.get(row.job_id), notes_by_candidate[row.id])
+        for row in rows
+    ]
+
+
+def _new_recruiter_job(
+    payload: RecruiterJobCreate,
+    user_id: int,
+    is_demo: bool = False,
+) -> RecruiterJob:
+    data = payload.model_dump()
+    return RecruiterJob(
+        user_id=user_id,
+        title=data["title"].strip(),
+        company=data["company"].strip(),
+        department=data["department"].strip() if data["department"] else None,
+        location=data["location"].strip() if data["location"] else None,
+        status=data["status"],
+        is_demo=is_demo,
+        experience_level=data["experience_level"].strip() if data["experience_level"] else None,
+        required_skills=_skills_list(data["required_skills"]),
+        description=data["description"].strip(),
+    )
+
+
+def _new_candidate(
+    db: Session,
+    payload: CandidateCreate,
+    user: User,
+    job_id_map: dict[str, int] | None = None,
+    is_demo: bool = False,
+) -> RecruiterCandidate:
+    data = payload.model_dump()
+    requested_job_id = data["target_job_id"]
+    job_id = None
+    job = None
+    if requested_job_id is not None:
+        mapped_id = (job_id_map or {}).get(str(requested_job_id), requested_job_id)
+        try:
+            job_id = int(mapped_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("targetJobId must identify a recruiter job") from exc
+        job = db.execute(
+            select(RecruiterJob).where(RecruiterJob.id == job_id, RecruiterJob.user_id == user.id)
+        ).scalar_one_or_none()
+        if job is None:
+            raise ValueError("targetJobId must identify one of your recruiter jobs")
+    candidate = RecruiterCandidate(
+        user_id=user.id,
+        job_id=job_id,
+        name=data["name"].strip(),
+        email=data["email"],
+        phone=data["phone"].strip() if data["phone"] else None,
+        location=data["location"].strip() if data["location"] else None,
+        target_job_title=(data["target_job_title"] or (job.title if job else None)),
+        stage=data["stage"],
+        is_demo=is_demo,
+        ats_score=data["ats_score"],
+        experience=data["experience"],
+        experience_years=_experience_value(data["experience"]),
+        skills=_skills_list(data["skills"]),
+        missing_skills=_skills_list(data["missing_skills"]),
+        resume_summary=data["resume_summary"],
+        source=data["source"],
+        applied_at=data["applied_date"] or date.today(),
+        hired_at=date.today() if data["stage"] == "Hired" else None,
+    )
+    db.add(candidate)
+    db.flush()
+    db.add(CandidateStageHistory(
+        candidate_id=candidate.id,
+        previous_stage=None,
+        stage=candidate.stage,
+        changed_by=user.id,
+    ))
+    for note_data in data["interview_notes"]:
+        db.add(CandidateNote(
+            candidate_id=candidate.id,
+            author=note_data["author"],
+            role=note_data["role"],
+            text=note_data["text"].strip(),
+            rating=note_data["rating"],
+        ))
+    return candidate
+
+
+@recruiter_router.get("/metrics")
+def recruiter_metrics(user: User = Depends(current_user), db: Session = Depends(get_db_session)):
+    jobs = select(RecruiterJob).where(RecruiterJob.user_id == user.id).subquery()
+    candidates = select(RecruiterCandidate).where(RecruiterCandidate.user_id == user.id).subquery()
+    total_jobs = db.scalar(select(func.count()).select_from(jobs)) or 0
+    active_jobs = db.scalar(
+        select(func.count()).select_from(RecruiterJob).where(
+            RecruiterJob.user_id == user.id, RecruiterJob.status == "Active"
+        )
+    ) or 0
+    total_candidates = db.scalar(select(func.count()).select_from(candidates)) or 0
+    interview_count = db.scalar(
+        select(func.count()).select_from(RecruiterCandidate).where(
+            RecruiterCandidate.user_id == user.id,
+            RecruiterCandidate.stage.in_(("Interview", "Technical Round", "HR Round")),
+        )
+    ) or 0
+    hires = db.scalar(
+        select(func.count()).select_from(RecruiterCandidate).where(
+            RecruiterCandidate.user_id == user.id, RecruiterCandidate.stage == "Hired"
+        )
+    ) or 0
+    return {
+        "totalJobs": total_jobs,
+        "activeJobs": active_jobs,
+        "candidatesApplied": total_candidates,
+        "interviewsScheduled": interview_count,
+        "hiresCompleted": hires,
+        "trends": {
+            "jobsTrend": "All time",
+            "activeTrend": f"{active_jobs} active requisitions",
+            "candidatesTrend": "All time",
+            "interviewsTrend": "Current pipeline",
+            "hiresTrend": "Completed hires",
+        },
+    }
+
+
+@recruiter_router.get("/jobs")
+def recruiter_jobs(
+    status_filter: str | None = Query(default=None, alias="status"),
+    search: str | None = Query(default=None, max_length=100),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db_session),
+):
+    stmt = select(RecruiterJob).where(RecruiterJob.user_id == user.id)
+    if status_filter and status_filter.lower() != "all":
+        normalized_status = status_filter.strip().title()
+        if normalized_status not in {"Active", "Paused", "Archived"}:
+            raise api_error(422, "status must be Active, Paused, or Archived", "INVALID_JOB_STATUS")
+        stmt = stmt.where(RecruiterJob.status == normalized_status)
+    if search:
+        pattern = f"%{search.strip()}%"
+        stmt = stmt.where(or_(RecruiterJob.title.ilike(pattern), RecruiterJob.company.ilike(pattern)))
+    total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+    rows = db.execute(
+        stmt.order_by(RecruiterJob.created_at.desc(), RecruiterJob.id.desc()).limit(limit).offset(offset)
+    ).scalars().all()
+    applicant_counts = dict(db.execute(
+        select(RecruiterCandidate.job_id, func.count())
+        .where(RecruiterCandidate.job_id.in_([row.id for row in rows]))
+        .group_by(RecruiterCandidate.job_id)
+    ).all()) if rows else {}
+    return {
+        "jobs": [
+            _recruiter_job_json(db, row, applicant_counts.get(row.id, 0))
+            for row in rows
+        ],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@recruiter_router.post("/jobs", status_code=201)
+def create_recruiter_job(
+    payload: RecruiterJobCreate,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db_session),
+):
+    row = _new_recruiter_job(payload, user.id)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _recruiter_job_json(db, row)
+
+
+@recruiter_router.get("/jobs/{job_id}")
+def get_recruiter_job(job_id: int, user: User = Depends(current_user), db: Session = Depends(get_db_session)):
+    return _recruiter_job_json(db, _get_recruiter_job(db, job_id, user))
+
+
+@recruiter_router.patch("/jobs/{job_id}")
+def update_recruiter_job(
+    job_id: int,
+    payload: RecruiterJobUpdate,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db_session),
+):
+    row = _get_recruiter_job(db, job_id, user)
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        if value is None:
+            if key == "required_skills":
+                value = []
+            elif key in {"title", "company", "status"}:
+                continue
+        if key == "required_skills" and value is not None:
+            value = _skills_list(value)
+        elif isinstance(value, str):
+            value = value.strip()
+        setattr(row, key, value)
+    db.commit()
+    db.refresh(row)
+    return _recruiter_job_json(db, row)
+
+
+@recruiter_router.delete("/jobs/{job_id}", status_code=204)
+def delete_recruiter_job(
+    job_id: int,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db_session),
+):
+    row = _get_recruiter_job(db, job_id, user)
+    candidate_count = db.scalar(
+        select(func.count()).select_from(RecruiterCandidate).where(RecruiterCandidate.job_id == row.id)
+    ) or 0
+    if candidate_count:
+        raise api_error(409, "Archive this job while it has candidates in its pipeline", "JOB_HAS_CANDIDATES")
+    db.delete(row)
+    db.commit()
+
+
+@recruiter_router.get("/candidates")
+def recruiter_candidates(
+    search: str | None = Query(default=None, max_length=100),
+    skill: str | None = Query(default=None, max_length=100),
+    stage: str | None = Query(default=None, max_length=30),
+    experience: str | None = Query(default=None, pattern="^(all|junior|mid|senior)$"),
+    location: str | None = Query(default=None, max_length=100),
+    min_score: int = Query(default=0, alias="minScore", ge=0, le=100),
+    job_id: str | None = Query(default=None, alias="jobId", max_length=30),
+    limit: int = Query(default=500, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db_session),
+):
+    stmt = select(RecruiterCandidate).where(RecruiterCandidate.user_id == user.id)
+    if search and search.strip():
+        pattern = f"%{search.strip()}%"
+        searchable = or_(
+            RecruiterCandidate.name.ilike(pattern),
+            RecruiterCandidate.email.ilike(pattern),
+            RecruiterCandidate.target_job_title.ilike(pattern),
+        )
+        if db.get_bind().dialect.name == "mysql":
+            searchable = or_(
+                searchable,
+                func.json_search(RecruiterCandidate.skills, "one", pattern).is_not(None),
+            )
+        else:
+            searchable = or_(searchable, cast(RecruiterCandidate.skills, String).ilike(pattern))
+        stmt = stmt.where(searchable)
+    if skill and skill.lower() != "all":
+        if db.get_bind().dialect.name == "mysql":
+            stmt = stmt.where(
+                func.json_contains(RecruiterCandidate.skills, json.dumps(skill.strip())) == 1
+            )
+        else:
+            stmt = stmt.where(cast(RecruiterCandidate.skills, String).ilike(f'%"{skill.strip()}"%'))
+    if stage and stage.lower() != "all":
+        normalized_stage = stage.strip()
+        if normalized_stage not in CandidateStage.__args__:
+            raise api_error(422, "stage is not a supported candidate pipeline stage", "INVALID_CANDIDATE_STAGE")
+        stmt = stmt.where(RecruiterCandidate.stage == normalized_stage)
+    if location and location.lower() != "all":
+        stmt = stmt.where(RecruiterCandidate.location.ilike(f"%{location.strip()}%"))
+    if min_score:
+        stmt = stmt.where(RecruiterCandidate.ats_score >= min_score)
+    if experience and experience != "all":
+        if experience == "junior":
+            stmt = stmt.where(RecruiterCandidate.experience_years < 3)
+        elif experience == "mid":
+            stmt = stmt.where(
+                RecruiterCandidate.experience_years >= 3,
+                RecruiterCandidate.experience_years < 5,
+            )
+        else:
+            stmt = stmt.where(RecruiterCandidate.experience_years >= 5)
+    if job_id and job_id != "all":
+        try:
+            parsed_job_id = int(job_id)
+        except ValueError as exc:
+            raise api_error(422, "jobId must be a valid recruiter job", "INVALID_JOB_ID") from exc
+        stmt = stmt.where(RecruiterCandidate.job_id == parsed_job_id)
+
+    total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+    rows = db.execute(
+        stmt.order_by(RecruiterCandidate.created_at.desc(), RecruiterCandidate.id.desc())
+        .limit(limit).offset(offset)
+    ).scalars().all()
+    return {
+        "candidates": _candidate_list_json(db, rows),
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@recruiter_router.post("/candidates", status_code=201)
+def create_recruiter_candidate(
+    payload: CandidateCreate,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db_session),
+):
+    try:
+        row = _new_candidate(db, payload, user)
+        db.commit()
+        db.refresh(row)
+    except ValueError as exc:
+        db.rollback()
+        raise api_error(422, str(exc), "INVALID_CANDIDATE") from exc
+    return _candidate_list_json(db, [row])[0]
+
+
+@recruiter_router.get("/candidates/{candidate_id}")
+def get_recruiter_candidate(
+    candidate_id: int,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db_session),
+):
+    return _candidate_list_json(db, [_get_recruiter_candidate(db, candidate_id, user)])[0]
+
+
+@recruiter_router.patch("/candidates/{candidate_id}")
+def update_recruiter_candidate(
+    candidate_id: int,
+    payload: CandidateUpdate,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db_session),
+):
+    row = _get_recruiter_candidate(db, candidate_id, user)
+    data = payload.model_dump(exclude_unset=True)
+    previous_stage = row.stage
+    if "email" in data and data["email"] is not None:
+        normalized = data["email"].strip().lower()
+        if not EMAIL_RE.match(normalized):
+            raise api_error(422, "email is not valid", "INVALID_CANDIDATE")
+        data["email"] = normalized
+    if "target_job_id" in data:
+        if data["target_job_id"] is None:
+            row.job_id = None
+            row.target_job_title = data.pop("target_job_title", None)
+        else:
+            try:
+                job_id = int(data["target_job_id"])
+            except (TypeError, ValueError) as exc:
+                raise api_error(422, "targetJobId must be a valid recruiter job", "INVALID_JOB_ID") from exc
+            job = db.execute(
+                select(RecruiterJob).where(RecruiterJob.id == job_id, RecruiterJob.user_id == user.id)
+            ).scalar_one_or_none()
+            if job is None:
+                raise api_error(422, "targetJobId must identify one of your recruiter jobs", "INVALID_JOB_ID")
+            row.job_id = job.id
+            row.target_job_title = data.pop("target_job_title", None) or job.title
+    for key, value in data.items():
+        if key == "target_job_id":
+            continue
+        if value is None and key in {"name", "email", "stage"}:
+            continue
+        if key in {"skills", "missing_skills"} and value is None:
+            value = []
+        if key in {"skills", "missing_skills"} and value is not None:
+            value = _skills_list(value)
+        if key == "experience":
+            row.experience_years = _experience_value(value)
+        if key == "stage" and value == "Hired" and row.hired_at is None:
+            row.hired_at = date.today()
+        if key == "stage" and value != "Hired":
+            row.hired_at = None
+        if key == "applied_date":
+            value = value or date.today()
+            row.applied_at = value
+            continue
+        setattr(row, key, value.strip() if isinstance(value, str) else value)
+    if row.stage != previous_stage:
+        db.add(CandidateStageHistory(
+            candidate_id=row.id,
+            previous_stage=previous_stage,
+            stage=row.stage,
+            changed_by=user.id,
+        ))
+    db.commit()
+    db.refresh(row)
+    return _candidate_list_json(db, [row])[0]
+
+
+@recruiter_router.delete("/candidates/{candidate_id}", status_code=204)
+def delete_recruiter_candidate(
+    candidate_id: int,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db_session),
+):
+    row = _get_recruiter_candidate(db, candidate_id, user)
+    db.execute(delete(CandidateNote).where(CandidateNote.candidate_id == row.id))
+    db.execute(delete(CandidateStageHistory).where(CandidateStageHistory.candidate_id == row.id))
+    db.delete(row)
+    db.commit()
+
+
+@recruiter_router.patch("/candidates/{candidate_id}/stage")
+def update_recruiter_candidate_stage(
+    candidate_id: int,
+    payload: CandidateStageUpdate,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db_session),
+):
+    candidate = _get_recruiter_candidate(db, candidate_id, user)
+    previous_stage = candidate.stage
+    if payload.stage != previous_stage:
+        candidate.stage = payload.stage
+        candidate.hired_at = date.today() if payload.stage == "Hired" else None
+        db.add(CandidateStageHistory(
+            candidate_id=candidate.id,
+            previous_stage=previous_stage,
+            stage=payload.stage,
+            changed_by=user.id,
+        ))
+        db.commit()
+        db.refresh(candidate)
+    return _candidate_list_json(db, [candidate])[0]
+
+
+@recruiter_router.post("/candidates/{candidate_id}/notes", status_code=201)
+def add_recruiter_candidate_note(
+    candidate_id: int,
+    payload: CandidateNoteCreate,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db_session),
+):
+    candidate = _get_recruiter_candidate(db, candidate_id, user)
+    note = CandidateNote(
+        candidate_id=candidate.id,
+        author=(payload.author or user.name or user.email).strip(),
+        role=payload.role.strip(),
+        text=payload.text.strip(),
+        rating=payload.rating,
+    )
+    db.add(note)
+    db.commit()
+    db.refresh(note)
+    return _candidate_note_json(note)
+
+
+@recruiter_router.get("/analytics")
+def recruiter_analytics(user: User = Depends(current_user), db: Session = Depends(get_db_session)):
+    stage_counts = dict(db.execute(
+        select(RecruiterCandidate.stage, func.count())
+        .where(RecruiterCandidate.user_id == user.id)
+        .group_by(RecruiterCandidate.stage)
+    ).all())
+    total_candidates = sum(stage_counts.values())
+    funnel = []
+    for index, stage_name in enumerate(RECRUITER_STAGES):
+        count = stage_counts.get(stage_name, 0)
+        next_count = stage_counts.get(RECRUITER_STAGES[index + 1], 0) if index + 1 < len(RECRUITER_STAGES) else 0
+        funnel.append({
+            "stage": stage_name,
+            "count": count,
+            "conversionRate": round(count / total_candidates * 100, 1) if total_candidates else 0,
+            "dropoutCount": max(count - next_count, 0),
+        })
+
+    source_counts = db.execute(
+        select(RecruiterCandidate.source, func.count())
+        .where(RecruiterCandidate.user_id == user.id)
+        .group_by(RecruiterCandidate.source)
+    ).all()
+    sources = []
+    for source, count in source_counts:
+        if not source:
+            continue
+        hired_count = db.scalar(
+            select(func.count()).select_from(RecruiterCandidate).where(
+                RecruiterCandidate.user_id == user.id,
+                RecruiterCandidate.source == source,
+                RecruiterCandidate.stage == "Hired",
+            )
+        ) or 0
+        sources.append({
+            "source": source,
+            "candidatesCount": count,
+            "hiresCount": hired_count,
+            "percentage": round(count / total_candidates * 100) if total_candidates else 0,
+        })
+
+    hired = db.execute(
+        select(RecruiterCandidate.applied_at, RecruiterCandidate.hired_at).where(
+            RecruiterCandidate.user_id == user.id,
+            RecruiterCandidate.stage == "Hired",
+            RecruiterCandidate.applied_at.is_not(None),
+            RecruiterCandidate.hired_at.is_not(None),
+        )
+    ).all()
+    hire_durations = [
+        (hired_at - applied_at).days
+        for applied_at, hired_at in hired
+        if hired_at >= applied_at
+    ]
+    average_days = round(sum(hire_durations) / len(hire_durations), 1) if hire_durations else 0
+    histories = db.execute(
+        select(CandidateStageHistory)
+        .join(RecruiterCandidate, RecruiterCandidate.id == CandidateStageHistory.candidate_id)
+        .where(RecruiterCandidate.user_id == user.id)
+        .order_by(CandidateStageHistory.candidate_id, CandidateStageHistory.changed_at, CandidateStageHistory.id)
+    ).scalars().all()
+    candidates_by_id = {
+        candidate.id: candidate
+        for candidate in db.execute(
+            select(RecruiterCandidate).where(RecruiterCandidate.user_id == user.id)
+        ).scalars()
+    }
+    history_by_candidate: dict[int, list[CandidateStageHistory]] = defaultdict(list)
+    for event in histories:
+        history_by_candidate[event.candidate_id].append(event)
+    stage_durations: dict[str, list[float]] = defaultdict(list)
+    for candidate_id, events in history_by_candidate.items():
+        candidate = candidates_by_id[candidate_id]
+        for index, event in enumerate(events):
+            end_time = events[index + 1].changed_at if index + 1 < len(events) else candidate.updated_at
+            start_time = event.changed_at
+            if end_time and start_time:
+                if end_time.tzinfo is None and start_time.tzinfo is None:
+                    elapsed = max((end_time - start_time).total_seconds() / 86400, 0)
+                else:
+                    end_time = end_time.replace(tzinfo=start_time.tzinfo) if end_time.tzinfo is None else end_time
+                    start_time = start_time.replace(tzinfo=end_time.tzinfo) if start_time.tzinfo is None else start_time
+                    elapsed = max((end_time - start_time).total_seconds() / 86400, 0)
+                stage_durations[event.stage].append(elapsed)
+    def average_stage_days(stages: tuple[str, ...]) -> float:
+        values = [duration for stage_name in stages for duration in stage_durations[stage_name]]
+        return round(sum(values) / len(values), 1) if values else 0
+
+    offers = stage_counts.get("Offer", 0) + stage_counts.get("Hired", 0)
+    hired_count = stage_counts.get("Hired", 0)
+    return {
+        "totalCandidates": total_candidates,
+        "funnel": funnel,
+        "sources": sources,
+        "timeToHireDays": {
+            "average": average_days,
+            "industryBenchmark": 24.5,
+            "breakdown": {
+                "sourcingDays": average_stage_days(("Applied",)),
+                "screeningDays": average_stage_days(("Screening",)),
+                "techRoundDays": average_stage_days(("Interview", "Technical Round")),
+                "offerDays": average_stage_days(("HR Round", "Offer")),
+            },
+        },
+        "conversionRate": {
+            "overallConversionPct": round(hired_count / total_candidates * 100, 1) if total_candidates else 0,
+            "offerAcceptancePct": round(hired_count / offers * 100, 1) if offers else 0,
+            "totalOffers": offers,
+            "totalHires": hired_count,
+        },
+    }
+
+
+@recruiter_router.post("/demo/reset")
+def reset_recruiter_demo_data(
+    payload: RecruiterDemoReset,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db_session),
+):
+    """Replace only the signed-in recruiter's pipeline with the UI's demo fixtures."""
+    demo_job_ids = db.execute(
+        select(RecruiterJob.id).where(
+            RecruiterJob.user_id == user.id,
+            RecruiterJob.is_demo.is_(True),
+        )
+    ).scalars().all()
+    if demo_job_ids:
+        db.execute(
+            update(RecruiterCandidate)
+            .where(
+                RecruiterCandidate.user_id == user.id,
+                RecruiterCandidate.is_demo.is_(False),
+                RecruiterCandidate.job_id.in_(demo_job_ids),
+            )
+            .values(job_id=None)
+        )
+    candidate_ids = db.execute(
+        select(RecruiterCandidate.id).where(
+            RecruiterCandidate.user_id == user.id,
+            RecruiterCandidate.is_demo.is_(True),
+        )
+    ).scalars().all()
+    if candidate_ids:
+        db.execute(delete(CandidateNote).where(CandidateNote.candidate_id.in_(candidate_ids)))
+        db.execute(delete(CandidateStageHistory).where(CandidateStageHistory.candidate_id.in_(candidate_ids)))
+        db.execute(delete(RecruiterCandidate).where(RecruiterCandidate.id.in_(candidate_ids)))
+    db.execute(delete(RecruiterJob).where(
+        RecruiterJob.user_id == user.id,
+        RecruiterJob.is_demo.is_(True),
+    ))
+    db.flush()
+
+    old_to_new: dict[str, int] = {}
+    try:
+        for payload_job, raw_job in zip(payload.jobs, payload.model_dump(by_alias=True)["jobs"]):
+            job = _new_recruiter_job(payload_job, user.id, is_demo=True)
+            db.add(job)
+            db.flush()
+            if raw_job.get("id") is not None:
+                old_to_new[str(raw_job["id"])] = job.id
+        for candidate in payload.candidates:
+            _new_candidate(db, candidate, user, old_to_new, is_demo=True)
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        raise api_error(422, str(exc), "INVALID_DEMO_DATA") from exc
+    except Exception:
+        db.rollback()
+        logger.exception("Could not reset recruiter demo data for user %s", user.id)
+        raise api_error(500, "Could not reset recruiter demo data", "RECRUITER_RESET_FAILED")
+    return {"jobs": len(payload.jobs), "candidates": len(payload.candidates), "status": "reset"}
+
+
+# =============================================================================
 # Authentication middleware
 # =============================================================================
 PUBLIC_PATHS = {
     "/api/health",
-    "/api/auth/register", "/api/auth/login",
+    "/api/auth/register", "/api/auth/login", "/api/auth/providers",
     "/api/auth/google/login", "/api/auth/google/callback",
     "/docs", "/redoc", "/openapi.json",  # disabled entirely when APP_ENV=production
 }
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
-    """Reject requests without a logged-in session, except for PUBLIC_PATHS and CORS preflights."""
+    """Reject /api requests without a logged-in session, except PUBLIC_PATHS and CORS preflights.
+
+    Everything outside /api (the HTML/CSS/JS frontend) is served without a session; the pages
+    protect themselves by asking /api/auth/me and redirecting to login.html on 401.
+    """
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path.rstrip("/") or "/"
-        if request.method == "OPTIONS" or path in PUBLIC_PATHS:
+        if request.method == "OPTIONS" or path in PUBLIC_PATHS or not path.startswith("/api/"):
             return await call_next(request)
         if not request.session.get("user_id"):
             return JSONResponse(status_code=401, content={"error": "Authentication required", "code": "UNAUTHORIZED"})
@@ -828,13 +2312,55 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
 
 # =============================================================================
+# Sample data
+# =============================================================================
+SAMPLE_JOBS: list[dict[str, Any]] = [
+    dict(title="Frontend Developer", company="Northwind Labs", location="Bengaluru, India", region="BANGALORE",
+         job_type="Full-time", experience_level="junior", skills="html css javascript react tailwind", certifications="",
+         description="Build customer-facing responsive applications in React and TypeScript. Collaborate with UX architects."),
+    dict(title="Python Developer", company="Brightpath Systems", location="Hyderabad, India", region="INDIA",
+         job_type="Full-time", experience_level="mid", skills="python fastapi docker sql aws", certifications="aws",
+         description="Design robust backend microservices using FastAPI, SQLAlchemy, and Docker containers."),
+    dict(title="Data Analyst", company="Orbit Analytics", location="Remote", region="GLOBAL",
+         job_type="Contract", experience_level="fresher", skills="sql python dashboards bi tableau", certifications="",
+         description="Analyze product event telemetry, generate recurring KPI dashboards, and write optimized SQL queries."),
+    dict(title="Java Developer", company="Harbor & Finch", location="Austin, TX, USA", region="US",
+         job_type="Full-time", experience_level="senior", skills="java spring microservices docker", certifications="pmp",
+         description="Lead backend enterprise integrations using Spring Boot, Kafka, and PostgreSQL."),
+    dict(title="DevOps Engineer", company="Cobalt Works", location="Bengaluru, India", region="BANGALORE",
+         job_type="Full-time", experience_level="mid", skills="docker kubernetes ci cd terraform", certifications="azure,aws",
+         description="Manage Kubernetes clusters, automate deployment pipelines, and maintain observability."),
+    dict(title="QA Engineer", company="Lumen Software", location="Pune, India", region="INDIA",
+         job_type="Full-time", experience_level="fresher", skills="testing selenium python cypress", certifications="",
+         description="Write automated end-to-end regression suites and participate in manual exploratory testing."),
+    dict(title="Django Developer", company="Fieldnote AI", location="Seattle, WA, USA", region="US",
+         job_type="Full-time", experience_level="mid", skills="python django rest postgres aws", certifications="gcp",
+         description="Implement REST APIs for internal workflow tools using Django REST framework and PostgreSQL."),
+    dict(title="Scrum Master", company="Tidewater Digital", location="Remote", region="GLOBAL",
+         job_type="Part-time", experience_level="mid", skills="agile scrum coaching jira", certifications="scrum",
+         description="Facilitate agile sprint ceremonies and remove blockers for cross-functional engineering teams."),
+]
+
+
+def seed_sample_jobs() -> None:
+    """Insert SAMPLE_JOBS once, only if the jobs table is empty (development convenience)."""
+    with get_session() as db:
+        if db.scalar(select(func.count()).select_from(Job)):
+            return
+        db.add_all(Job(**item) for item in SAMPLE_JOBS)
+    logger.info("Seeded %d sample jobs", len(SAMPLE_JOBS))
+
+
+# =============================================================================
 # Application assembly
 # =============================================================================
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    """Create missing tables at startup (use migrations for real schema changes)."""
+    """Create missing tables/columns and seed sample jobs at startup."""
     try:
         init_db()
+        if settings.seed_sample_jobs:
+            seed_sample_jobs()
     except RuntimeError:
         logger.warning("Database not initialized: set DB_PASSWORD or DATABASE_URL")
     except Exception:
@@ -876,6 +2402,9 @@ for _router in (
     analyzer_router,      # /api/analyzer  (analyzer.py)
     regions_router,       # /api/regions
     jobs_router,          # /api/jobs
+    job_router,           # /api/job (uploads + parsed job descriptions)
+    recruiter_router,     # /api/recruiter
+    job_applications_router,  # /api/job-applications
     chat_router,          # /api/chat
     interview_router,     # /api/interview
     courses_router,       # /api/courses
@@ -891,6 +2420,14 @@ for _router in (
 def health():
     """Liveness probe (public). Response 200: {"status": "ok"}"""
     return {"status": "ok"}
+
+
+# Serve the frontend from the same origin as the API. This MUST be mounted after every API
+# route, because a mount at "/" matches any path that no earlier route claimed.
+if settings.frontend_dir and Path(settings.frontend_dir).is_dir():
+    app.mount("/", StaticFiles(directory=settings.frontend_dir, html=True), name="frontend")
+else:
+    logger.info("Frontend folder not found/disabled; serving the API only")
 
 
 # =============================================================================

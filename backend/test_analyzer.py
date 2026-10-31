@@ -52,3 +52,11 @@ def test_oversized_text_rejected():
 def test_alias_normalization():
     result = analyze_resume("Experienced in JS and K8s", "Need JavaScript and Kubernetes")
     assert result["matched_skills"] == ["javascript", "kubernetes"]
+
+
+def test_rest_api_plural_and_frontend_skill_aliases():
+    result = analyze_resume(
+        "Built REST APIs with HTML5 and CSS3",
+        "Requires REST API, HTML, and CSS",
+    )
+    assert set(result["matched_skills"]) == {"rest api", "html", "css"}
