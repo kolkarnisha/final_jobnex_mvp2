@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Recruiter Portal & Candidate Pipeline – JOBNEX</title>
+  <meta name="description" content="Dedicated recruiter workspace. Manage active job requisitions, track candidates across the 7-stage hiring pipeline with drag-and-drop Kanban, and review recruitment analytics.">
+  <link rel="stylesheet" href="common.css">
+  <link rel="stylesheet" href="glow-card.css">
+  <link rel="stylesheet" href="components/recruiters/recruiters.css">
+</head>
+<body data-page="recruiters">
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <header id="site-header" class="site-header"></header>
+
+  <main id="main" class="container">
+    <!-- Page Header -->
+    <div class="page-header">
+      <div class="page-header-text">
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+          <span class="badge badge-primary">Recruiter Workspace</span>
+          <span class="badge badge-neutral">Pipeline Command Center</span>
+        </div>
+        <h1>Recruiter Command Dashboard</h1>
+        <p>Oversee open requisitions, review candidate match scores, and drive candidates through the 7-stage hiring pipeline.</p>
+      </div>
+      <div class="page-actions">
+        <button type="button" class="btn btn-outline" id="reset-recruiter-demo-btn" title="Reset candidate and job data to initial state">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+          Reset Demo Data
+        </button>
+        <button type="button" class="btn" id="header-post-job-btn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Post New Job
+        </button>
+      </div>
+    </div>
+
+    <!-- Callout Banner -->
+    <div class="callout callout-demo" role="note">
+      <span class="callout-icon">ℹ️</span>
+      <div>
+        <strong>Recruiter Management Suite:</strong> Drag candidate cards across the 7 pipeline stages to update their progress in real-time. Click any card to inspect the candidate dossier, ATS match score, and interviewer notes.
+      </div>
+    </div>
+
+    <!-- Section A: Recruiter Dashboard (KPI Cards) -->
+    <section id="recruiter-dashboard-section" aria-labelledby="kpi-heading" style="margin-bottom: 24px;">
+      <h2 id="kpi-heading" class="visually-hidden">Recruiter Key Metrics</h2>
+      <div id="rec-kpi-mount"></div>
+    </section>
+
+    <!-- Section B: Job Management Table/Grid -->
+    <section id="job-management-section" style="margin-bottom: 32px;">
+      <div id="rec-job-table-mount"></div>
+    </section>
+
+    <!-- Section D: Candidate Search & Filter Toolbar -->
+    <section id="candidate-search-section">
+      <div id="rec-filter-mount"></div>
+    </section>
+
+    <!-- Section C: Candidate Pipeline Kanban Board -->
+    <section id="candidate-pipeline-section" style="margin-bottom: 32px;">
+      <div id="rec-kanban-mount"></div>
+    </section>
+
+    <!-- Section F: Recruitment Analytics -->
+    <section id="recruitment-analytics-section" style="margin-bottom: 32px;">
+      <div id="rec-analytics-mount"></div>
+    </section>
+  </main>
+
+  <footer id="site-footer" class="site-footer"></footer>
+
+  <!-- Scripts -->
+  <script src="api.js"></script>
+  <script src="components/recruiters/RecruiterDashboardCards.js"></script>
+  <script src="components/recruiters/JobManagementTable.js"></script>
+  <script src="components/recruiters/CandidatePipelineKanban.js"></script>
+  <script src="components/recruiters/CandidateSearchFilter.js"></script>
+  <script src="components/recruiters/CandidateDrawer.js"></script>
+  <script src="components/recruiters/RecruitmentAnalytics.js"></script>
+  <script src="components/recruiters/index.js"></script>
+  <script src="common.js"></script>
+</body>
+</html>

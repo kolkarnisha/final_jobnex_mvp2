@@ -6,6 +6,8 @@
   <title>Resume Analyzer – JOBNEX</title>
   <meta name="description" content="Evaluate resume fit against target job descriptions. Extract keyword coverage, identify skill gaps, and receive actionable suggestions.">
   <link rel="stylesheet" href="common.css">
+  <link rel="stylesheet" href="glow-card.css">
+  <link rel="stylesheet" href="components/job-upload/job-upload.css">
 </head>
 <body data-page="analyzer">
   <a class="skip-link" href="#main">Skip to main content</a>
@@ -50,8 +52,8 @@
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
             </svg>
             <div style="font-weight: 600; margin-bottom: 2px;">Click to upload or drag & drop</div>
-            <div class="text-sm text-muted">Supports .txt, .pdf, or .docx files (Max 5MB)</div>
-            <input type="file" id="resume-file-upload" accept=".txt,.pdf,.docx,.doc" style="display: none;">
+            <div class="text-sm text-muted">Plain-text (.txt) resumes up to 5MB, or paste your resume text below</div>
+            <input type="file" id="resume-file-upload" accept=".txt,text/plain" style="display: none;">
           </div>
 
           <div id="file-name-pill" class="file-pill" hidden></div>
@@ -73,7 +75,12 @@
         <section class="card" aria-label="Job Description Input">
           <div class="card-header">
             <h3>Target Job Description</h3>
-            <span class="badge badge-neutral">Specification</span>
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <a href="job-upload.html" class="btn btn-outline btn-sm" title="Open full studio with document parser">
+                Open Job Studio &rarr;
+              </a>
+              <span class="badge badge-neutral">Specification</span>
+            </div>
           </div>
 
           <!-- Quick Sample JD Chips -->
@@ -87,8 +94,26 @@
             </div>
           </div>
 
-          <div>
-            <label for="jd_text">Job Description Content</label>
+          <!-- JD File Dropzone -->
+          <div style="margin-top: 10px;">
+            <div class="dropzone" id="jd-dropzone" tabindex="0" role="button" aria-label="Click or drag file to upload job description">
+              <svg class="dropzone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/>
+              </svg>
+              <div style="font-weight: 600; margin-bottom: 2px;">Upload JD Document (.pdf, .docx, .doc, .txt)</div>
+              <div class="text-sm text-muted">Or paste your job description plain text below</div>
+              <input type="file" id="jd-file-upload" accept=".pdf,.docx,.doc,.txt,text/plain,application/pdf" style="display: none;">
+            </div>
+            <div id="jd-file-pill" class="file-pill" hidden></div>
+          </div>
+
+          <div style="margin-top: 14px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+              <label for="jd_text" style="margin: 0;">Job Description Content</label>
+              <button type="button" id="inspect-extracted-jd-btn" class="btn btn-ghost btn-sm" style="font-size: 0.75rem; padding: 2px 6px;">
+                🔍 Inspect Extracted Skills
+              </button>
+            </div>
             <textarea
               id="jd_text"
               name="jd_text"
@@ -102,6 +127,9 @@ Experience with AWS infrastructure, CI/CD pipelines, and microservices is highly
           </div>
         </section>
       </div>
+
+      <!-- Mount point for extracted job details preview if inspected -->
+      <div id="analyzer-extracted-jd-mount" style="margin-top: 16px;" hidden></div>
 
       <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 8px; flex-wrap: wrap; gap: 12px;">
         <p id="status" role="status" class="text-sm text-muted" style="margin: 0;"></p>
@@ -170,6 +198,34 @@ Experience with AWS infrastructure, CI/CD pipelines, and microservices is highly
         </div>
       </div>
 
+      <!-- FEATURE 1: Comprehensive Job Match Analysis Section -->
+      <section id="job-match-analysis" class="job-match-section" style="margin-top: 28px; padding-top: 24px; border-top: 2px dashed var(--border-color);">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; flex-wrap: wrap; gap: 8px;">
+          <div>
+            <h3 style="margin: 0; font-size: 1.2rem; color: var(--text-primary); display: flex; align-items: center; gap: 8px;">
+              <span class="badge badge-primary">Connected</span>
+              Job Match Analysis
+            </h3>
+            <p class="text-sm text-muted" style="margin: 2px 0 0;">
+              In-depth semantic alignment against the target job specification with prioritized tailoring roadmap.
+            </p>
+          </div>
+          <span class="badge badge-neutral" id="jma-target-title">Target: Active Role</span>
+        </div>
+
+        <!-- 1. ATS Match Score (Circular Score Card) & 6. Match Visualizations -->
+        <div id="jma-score-mount" style="margin-bottom: 20px;"></div>
+
+        <!-- 2. Keyword Match (Matched vs Missing) -->
+        <div id="jma-keyword-mount" style="margin-bottom: 20px;"></div>
+
+        <!-- 3. Skill Gap Analysis (Found, Missing, Critical Missing) -->
+        <div id="jma-skillgap-mount" style="margin-bottom: 20px;"></div>
+
+        <!-- 4. Resume Tailoring Suggestions & 5. Improvement Priority Meter -->
+        <div id="jma-tailoring-mount" style="margin-bottom: 20px;"></div>
+      </section>
+
       <!-- Next Steps Actions -->
       <div style="display: flex; gap: 12px; margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border-color); flex-wrap: wrap;">
         <a href="courses.html" class="btn btn-secondary">
@@ -178,6 +234,38 @@ Experience with AWS infrastructure, CI/CD pipelines, and microservices is highly
         <a href="jobs.html" class="btn btn-outline">
           Find Matching Jobs
         </a>
+        <a href="job-upload.html" class="btn btn-outline">
+          Open Job Studio
+        </a>
+      </div>
+    </section>
+
+    <!-- Next steps (glow cards) -->
+    <section class="card" aria-labelledby="next-heading">
+      <div class="card-header">
+        <h2 id="next-heading">Next Steps</h2>
+      </div>
+      <div class="glow-grid">
+        <a href="courses.html" class="glow-card">
+          <p class="glow-card__title">Bridge Skills</p>
+          <p>Find courses that close the gap between you and your target role.</p>
+          <p>Browse courses &rarr;</p>
+        </a>
+        <a href="jobs.html" class="glow-card">
+          <p class="glow-card__title">Find Jobs</p>
+          <p>Browse curated roles that match your stack and experience.</p>
+          <p>Search jobs &rarr;</p>
+        </a>
+        <a href="recruiters.html" class="glow-card">
+          <p class="glow-card__title">Recruiter Portal</p>
+          <p>Explore applicant pipelines, talent metrics, and ATS rankings.</p>
+          <p>View Recruiter Dashboard &rarr;</p>
+        </a>
+        <a href="interveiw.html" class="glow-card">
+          <p class="glow-card__title">Interview Drills</p>
+          <p>Practice behavioral and technical questions with STAR guidance.</p>
+          <p>Start practice &rarr;</p>
+        </a>
       </div>
     </section>
   </main>
@@ -185,6 +273,13 @@ Experience with AWS infrastructure, CI/CD pipelines, and microservices is highly
   <footer id="site-footer" class="site-footer"></footer>
 
   <script src="api.js"></script>
+  <script src="components/job-upload/JobUploader.js"></script>
+  <script src="components/job-upload/JobDetailsCard.js"></script>
+  <script src="components/job-upload/MatchScoreWidget.js"></script>
+  <script src="components/job-upload/KeywordAnalysis.js"></script>
+  <script src="components/job-upload/SkillGapCard.js"></script>
+  <script src="components/job-upload/TailoringSuggestions.js"></script>
+  <script src="components/job-upload/index.js"></script>
   <script src="common.js"></script>
 </body>
 </html>

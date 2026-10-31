@@ -1,0 +1,517 @@
+/* ==========================================================================
+   JOB UPLOAD & ATS TAILORING COMPONENTS STYLES
+   JOBNEX Purple & White Design System
+   ========================================================================== */
+
+/* Dropzone & Uploader */
+.ju-uploader {
+  background: var(--surface-main);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+  box-shadow: var(--shadow-xs);
+  transition: all 0.2s ease;
+}
+
+.ju-tabs {
+  display: flex;
+  gap: var(--space-2);
+  border-bottom: 1px solid var(--border-subtle);
+  margin-bottom: var(--space-4);
+  padding-bottom: var(--space-2);
+}
+
+.ju-tab-btn {
+  background: transparent;
+  border: none;
+  font-family: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  padding: 8px 16px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.15s ease;
+}
+
+.ju-tab-btn:hover {
+  color: var(--brand-purple);
+  background: var(--surface-purple-subtle);
+}
+
+.ju-tab-btn.active {
+  color: var(--brand-purple);
+  background: var(--surface-purple-subtle);
+  border-bottom: 2px solid var(--brand-purple);
+}
+
+.ju-dropzone {
+  border: 2px dashed var(--brand-purple-border);
+  background: var(--surface-muted);
+  border-radius: var(--radius-lg);
+  padding: 32px 20px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  position: relative;
+}
+
+.ju-dropzone:hover,
+.ju-dropzone.dragover {
+  border-color: var(--brand-purple);
+  background: var(--surface-purple-subtle);
+  transform: translateY(-1px);
+}
+
+.ju-dropzone-icon {
+  width: 44px;
+  height: 44px;
+  margin: 0 auto 12px;
+  color: var(--brand-purple);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #EDE4FB;
+  border-radius: var(--radius-full);
+}
+
+.ju-sample-roles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.ju-sample-chip {
+  background: var(--surface-muted);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  padding: 4px 12px;
+  border-radius: var(--radius-full);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.ju-sample-chip:hover {
+  background: var(--surface-purple-subtle);
+  border-color: var(--brand-purple-border);
+  color: var(--brand-purple);
+}
+
+/* Loading Skeleton */
+.ju-skeleton-box {
+  background: linear-gradient(90deg, #F3EAFD 25%, #EDE2FB 50%, #F3EAFD 75%);
+  background-size: 200% 100%;
+  animation: juShimmer 1.5s infinite;
+  border-radius: var(--radius-sm);
+  height: 20px;
+  margin-bottom: 10px;
+}
+
+@keyframes juShimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Extracted Job Details Card */
+.jd-card {
+  background: var(--surface-main);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+  box-shadow: var(--shadow-sm);
+  margin-bottom: var(--space-6);
+}
+
+.jd-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+  margin-bottom: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.jd-title-group h2 {
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0 0 4px;
+}
+
+.jd-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.jd-meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.jd-skills-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin: 16px 0;
+}
+
+@media (max-width: 768px) {
+  .jd-skills-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.jd-section-title {
+  font-size: 0.875rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin: 0 0 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.jd-tag-cloud {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.jd-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.jd-tag.required {
+  background: var(--surface-purple-subtle);
+  color: var(--brand-purple);
+  border: 1px solid var(--brand-purple-border);
+}
+
+.jd-tag.preferred {
+  background: #F1F5F9;
+  color: #475569;
+  border: 1px solid #E2E8F0;
+}
+
+.jd-tag.keyword {
+  background: #EFF6FF;
+  color: #1D4ED8;
+  border: 1px solid #BFDBFE;
+}
+
+.jd-responsibilities {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+}
+
+.jd-responsibilities li {
+  position: relative;
+  padding-left: 20px;
+  margin-bottom: 8px;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.jd-responsibilities li::before {
+  content: "•";
+  position: absolute;
+  left: 4px;
+  top: 0;
+  color: var(--brand-purple);
+  font-size: 1.2rem;
+  line-height: 1.2;
+}
+
+/* Match Score Circular Widget */
+.match-score-widget {
+  background: var(--surface-main);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  flex-wrap: wrap;
+}
+
+.circular-gauge-wrap {
+  position: relative;
+  width: 140px;
+  height: 140px;
+  flex-shrink: 0;
+}
+
+.circular-gauge-wrap svg {
+  transform: rotate(-90deg);
+  width: 100%;
+  height: 100%;
+}
+
+.circular-gauge-bg {
+  fill: none;
+  stroke: var(--border-subtle);
+  stroke-width: 10;
+}
+
+.circular-gauge-fill {
+  fill: none;
+  stroke: var(--brand-purple);
+  stroke-width: 10;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 1s ease-in-out, stroke 0.3s ease;
+}
+
+.circular-gauge-content {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.circular-score-val {
+  font-size: 2.2rem;
+  font-weight: 800;
+  color: var(--text-primary);
+  line-height: 1;
+}
+
+.circular-score-max {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-weight: 600;
+  margin-top: 2px;
+}
+
+.match-score-meta {
+  flex: 1;
+  min-width: 240px;
+}
+
+.match-tier-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: var(--radius-full);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.match-tier-badge.strong {
+  background: var(--color-success-subtle);
+  color: #065F46;
+  border: 1px solid var(--color-success-border);
+}
+
+.match-tier-badge.moderate {
+  background: var(--color-warning-subtle);
+  color: #92400E;
+  border: 1px solid var(--color-warning-border);
+}
+
+.match-tier-badge.gaps {
+  background: var(--color-danger-subtle);
+  color: #991B1B;
+  border: 1px solid var(--color-danger-border);
+}
+
+/* Visual Progress Bars */
+.match-viz-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin-top: 20px;
+}
+
+@media (max-width: 860px) {
+  .match-viz-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.viz-card {
+  background: var(--surface-muted);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 16px;
+}
+
+.viz-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: var(--text-secondary);
+}
+
+.viz-bar-bg {
+  height: 8px;
+  background: var(--border-color);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+
+.viz-bar-fill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  transition: width 0.8s ease-in-out;
+}
+
+/* Keyword & Skill Gap Cards */
+.matched-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  background: #ECFDF5;
+  color: #047857;
+  border: 1px solid #A7F3D0;
+  border-radius: var(--radius-full);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.missing-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  background: #FFFBEB;
+  color: #B45309;
+  border: 1px solid #FDE68A;
+  border-radius: var(--radius-full);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.critical-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  background: #FEF2F2;
+  color: #DC2626;
+  border: 1px solid #FECACA;
+  border-radius: var(--radius-full);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.1);
+  animation: juPulse 2s infinite;
+}
+
+@keyframes juPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.9; transform: scale(1.02); }
+}
+
+/* Tailoring Recommendations & Priority Meter */
+.tailoring-card {
+  background: var(--surface-main);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 16px 20px;
+  margin-bottom: 12px;
+  transition: all 0.15s ease;
+}
+
+.tailoring-card:hover {
+  border-color: var(--brand-purple-border);
+  box-shadow: var(--shadow-sm);
+}
+
+.tailoring-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+
+.snippet-box {
+  background: var(--surface-purple-subtle);
+  border: 1px dashed var(--brand-purple-border);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  margin-top: 10px;
+  font-family: inherit;
+  font-size: 0.875rem;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.priority-meter-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.priority-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  background: var(--surface-muted);
+}
+
+.priority-row.high {
+  border-left: 4px solid var(--color-danger);
+}
+
+.priority-row.medium {
+  border-left: 4px solid var(--color-warning);
+}
+
+.priority-row.low {
+  border-left: 4px solid var(--color-info);
+}
+
+.points-boost-pill {
+  margin-left: auto;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+  background: var(--surface-purple-subtle);
+  color: var(--brand-purple);
+  border: 1px solid var(--brand-purple-border);
+  white-space: nowrap;
+}

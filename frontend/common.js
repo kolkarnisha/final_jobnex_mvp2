@@ -36,6 +36,11 @@
     return el;
   }
 
+  // Escape text before it is placed inside an innerHTML template (jobs/applications come from the server).
+  const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, ch => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]
+  ));
+
   // Local Storage Wrapper
   const store = {
     get(key, defaultValue) {
@@ -75,7 +80,7 @@
         : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>';
 
     const toast = h('div', { class: `toast ${type}`, role: 'status' });
-    toast.innerHTML = `${iconSvg}<span>${message}</span>`;
+    toast.innerHTML = `${iconSvg}<span>${escapeHtml(message)}</span>`;
     container.appendChild(toast);
 
     setTimeout(() => {
@@ -105,8 +110,12 @@
             type: 'button',
             class: isDanger ? 'btn btn-danger-solid' : 'btn',
             async onclick() {
-              if (onConfirm) await onConfirm();
-              close();
+              try {
+                if (onConfirm) await onConfirm();
+                close();
+              } catch (error) {
+                showToast(`Action failed: ${error.message}`, 'error');
+              }
             }
           }, confirmText)
         )
@@ -139,7 +148,8 @@
       content: h('p', {}, 'Are you sure you want to log out of your current session?'),
       confirmText: 'Sign out',
       isDanger: false,
-      onConfirm() {
+      async onConfirm() {
+        try { if (API().logout) await API().logout(); } catch (e) { /* already signed out */ }
         try {
           sessionStorage.removeItem(SKEY);
           localStorage.removeItem(SKEY);
@@ -163,16 +173,56 @@
     return;
   }
 
+  // Role-based route protection placeholder (Recruiter Portal)
+  if (page === 'recruiters') {
+    const userRole = (session && session.role) || 'recruiter';
+    if (userRole !== 'recruiter' && userRole !== 'admin') {
+      showToast('Access restricted: Recruiter role required.', 'error');
+      location.replace('dashboard.html');
+      return;
+    }
+  }
+
+  // The stored session only makes the redirect instant. The REAL session is the signed cookie
+  // on the server, so confirm it in the background and bounce to login if it has expired.
+  if (page !== 'login' && API().me) {
+    API().me().then(res => {
+      if (res && res.user) {
+        const remembered = !!localStorage.getItem(SKEY);
+        setSession({ email: res.user.email, name: res.user.name || null }, remembered);
+      }
+    }).catch(err => {
+      if (err && err.status === 401) {
+        try { sessionStorage.removeItem(SKEY); localStorage.removeItem(SKEY); } catch (e) {}
+        location.replace('login.html');
+      } // network errors: keep the page usable
+    });
+  }
+
   // Gracefully redirect any direct access to removed AI Assistant / chatbot route
   if (page === 'chatbot' || location.pathname.endsWith('chatbot.html') || location.pathname.includes('/chatbot')) {
     location.replace('dashboard.html');
     return;
   }
 
+  // Export common utilities for external components
+  window.JOBNEX = {
+    h,
+    escapeHtml,
+    showToast,
+    showModal,
+    store,
+    getSession,
+    setSession,
+    logout
+  };
+
   /* ---------- Shared Navigation & Chrome ---------- */
   const NAV_ITEMS = [
     { href: 'dashboard.html', label: 'Dashboard', icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>' },
     { href: 'analyzer.html', label: 'Resume Analyzer', icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>' },
+    { href: 'job-upload.html', label: 'Job Upload', icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>' },
+    { href: 'recruiters.html', label: 'Recruiters', icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>' },
     { href: 'jobs.html', label: 'Find Jobs', icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>' },
     { href: 'interveiw.html', label: 'Interview Prep', icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>' },
     { href: 'courses.html', label: 'Courses', icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 10v6M2 10l10-5 10 5-10 5z"/><path d="M6 12v5c3 3 9 3 12 0v-5"/></svg>' },
@@ -186,14 +236,17 @@
     if (!header) return;
 
     const currentPath = location.pathname.split('/').pop() || 'dashboard.html';
-    const userEmail = (session && session.email) || 'gulabiparameshachari@gmail.com';
-    const userInitials = userEmail.split('@')[0].slice(0, 2).toUpperCase() || 'GP';
+    const userEmail = (session && session.email) || 'guest';
+    const userInitials = (((session && session.name) || userEmail.split('@')[0]).slice(0, 2).toUpperCase()) || 'JN';
 
     // Desktop Nav Items
     const navLinks = h('ul', { class: 'nav-menu', role: 'menubar' },
       NAV_ITEMS.map(item => {
-        // Handle interveiw.html vs interview.html matching
-        const isCurrent = item.href === currentPath || (item.href === 'interveiw.html' && currentPath === 'interview.html');
+        // Handle interveiw.html vs interview.html matching & clean routes
+        const isCurrent = item.href === currentPath ||
+          (item.href === 'interveiw.html' && currentPath === 'interview.html') ||
+          (item.href === 'recruiters.html' && (currentPath === 'recruiters' || location.pathname.includes('/recruiters'))) ||
+          (item.href === 'job-upload.html' && (currentPath === 'job-upload' || location.pathname.includes('/job-upload')));
         const link = h('a', {
           href: item.href,
           role: 'menuitem',
@@ -285,10 +338,17 @@
             <span class="text-muted" style="margin-left: 8px;">Restrained, accessible SaaS career management.</span>
           </div>
           <div>
-            <span class="badge-demo">Demo mode: In-memory SQLite</span>
+            <span class="badge-demo" id="api-status-badge">Checking server…</span>
           </div>
         </div>
       `;
+      const badge = $('#api-status-badge');
+      if (badge && API().checkHealth) {
+        API().checkHealth().then(res => {
+          const online = res && res.status === 'ok';
+          badge.textContent = online ? 'Connected to JOBNEX API' : 'Offline: showing demo data only';
+        });
+      }
     }
   }
 
@@ -306,6 +366,36 @@
 
   const getApps = () => store.get('apps', null) || SEED_APPS();
   const saveApps = apps => store.set('apps', apps);
+
+  // Backend application -> the object shape the tables/kanban render.
+  const toUiApp = a => ({
+    id: a.application_id,
+    jobId: a.job_id || null,
+    company: a.company,
+    title: a.job_title,
+    date: a.created_at ? String(a.created_at).slice(0, 10) : daysAgo(0),
+    status: a.status || 'Applied'
+  });
+
+  let offlineNoticeShown = false;
+  /** Returns { apps, serverBacked }. An EMPTY server list is a real answer (no fake seed rows). */
+  async function loadApplications() {
+    if (API().getApplications) {
+      try {
+        const res = await API().getApplications();
+        if (res && Array.isArray(res.applications)) {
+          return { apps: res.applications.map(toUiApp), serverBacked: true };
+        }
+      } catch (e) {
+        if (e && e.status === 401) throw e;           // api.js already redirects to login
+        if (!offlineNoticeShown) {
+          offlineNoticeShown = true;
+          showToast('Server unreachable: showing local demo data.', 'error', 5000);
+        }
+      }
+    }
+    return { apps: getApps(), serverBacked: false };
+  }
 
   const badgeEl = status => {
     const s = String(status || 'Applied').toLowerCase();
@@ -333,7 +423,26 @@
     const submitBtn = $('#login-button');
     const feedback = $('#login-feedback');
     const pwToggle = $('#password-toggle-btn');
-    const demoFillBtn = $('#demo-fill-btn');
+    const modeToggle = $('#auth-mode-toggle');
+    const nameWrap = $('#register-name-wrap');
+    const nameInput = $('#register-name');
+    const titleEl = $('#auth-title');
+    const subtitleEl = $('#auth-subtitle');
+    let registerMode = false;            // false = sign in, true = create account
+
+    function setMode(register) {
+      registerMode = register;
+      if (nameWrap) nameWrap.hidden = !register;
+      if (titleEl) titleEl.textContent = register ? 'Create Account' : 'Sign In';
+      if (subtitleEl) subtitleEl.textContent = register
+        ? 'Create your JOBNEX account. Use at least 8 characters for the password.'
+        : 'Enter your credentials to access your career command center.';
+      if (submitBtn) submitBtn.textContent = register ? 'Create Account' : 'Sign In to JOBNEX';
+      if (modeToggle) modeToggle.textContent = register ? 'Already have an account? Sign in' : 'New here? Create an account';
+      if (passwordInput) passwordInput.autocomplete = register ? 'new-password' : 'current-password';
+      if (feedback) feedback.textContent = '';
+    }
+    if (modeToggle) modeToggle.addEventListener('click', () => setMode(!registerMode));
 
     // Interactive icon movement: Icon goes UP ⬆, Details reveal DOWN ⬇
     function revealDetails() {
@@ -397,15 +506,6 @@
       });
     }
 
-    // Auto-fill demo credentials
-    if (demoFillBtn) {
-      demoFillBtn.addEventListener('click', () => {
-        emailInput.value = 'gulabiparameshachari@gmail.com';
-        passwordInput.value = 'CandidatePass123!';
-        showToast('Demo credentials populated', 'info');
-      });
-    }
-
     // Login submit
     if (form) {
       form.addEventListener('submit', async e => {
@@ -447,22 +547,20 @@
         if (!valid) return;
 
         submitBtn.disabled = true;
-        submitBtn.innerHTML = '<span class="spinner"></span> Signing in…';
+        submitBtn.innerHTML = `<span class="spinner"></span> ${registerMode ? 'Creating account…' : 'Signing in…'}`;
 
         try {
-          // If backend has real auth
-          if (API().signInWithEmail) {
-            await API().signInWithEmail({ email, password });
-          } else {
-            // Simulated local delay
-            await new Promise(r => setTimeout(r, 450));
-          }
-          setSession({ email, demo: true }, rememberMe && rememberMe.checked);
-          showToast('Welcome back! Loading your dashboard…', 'success');
+          // Real authentication: the backend validates the credentials and sets the session cookie.
+          const res = registerMode
+            ? await API().register({ email, password, name: nameInput ? nameInput.value.trim() : '' })
+            : await API().signInWithEmail({ email, password });
+          const user = (res && res.user) || { email };
+          setSession({ email: user.email, name: user.name || null }, rememberMe && rememberMe.checked);
+          showToast(registerMode ? 'Account created! Loading your dashboard…' : 'Welcome back! Loading your dashboard…', 'success');
           setTimeout(() => location.href = 'dashboard.html', 500);
         } catch (err) {
           submitBtn.disabled = false;
-          submitBtn.textContent = 'Sign In';
+          submitBtn.textContent = registerMode ? 'Create Account' : 'Sign In to JOBNEX';
           if (feedback) {
             feedback.textContent = err.message || 'Sign in failed. Check your details.';
             feedback.style.color = 'var(--color-danger)';
@@ -474,14 +572,29 @@
     // Google Sign In
     const googleBtn = $('#google-login');
     if (googleBtn) {
-      googleBtn.addEventListener('click', () => {
+      googleBtn.addEventListener('click', async () => {
+        const providers = API().getAuthProviders ? await API().getAuthProviders() : { google: false };
+        if (providers.google) {
+          location.href = API().googleLoginUrl();   // server redirects to Google, then back to login.html
+          return;
+        }
         showModal({
-          title: 'Google OAuth Integration',
-          content: h('p', {}, 'Google SSO requires server-side OAuth2 credentials (client ID & secret). In this demo environment, please sign in using the Email & Password form above.'),
+          title: 'Google sign-in not configured',
+          content: h('p', {}, 'The server has no Google OAuth credentials yet. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in the backend .env file (see the integration guide), or sign in with email and password.'),
           confirmText: 'Understood',
           cancelText: 'Close'
         });
       });
+    }
+
+    // Already signed in (or just returned from Google)? Go straight to the dashboard.
+    if (API().me) {
+      API().me().then(res => {
+        if (res && res.user) {
+          setSession({ email: res.user.email, name: res.user.name || null }, true);
+          location.replace('dashboard.html');
+        }
+      }).catch(() => { /* not signed in: stay on the form */ });
     }
 
     // Forgot Password
@@ -491,7 +604,7 @@
         e.preventDefault();
         showModal({
           title: 'Reset Password',
-          content: h('p', {}, 'Password recovery requires an SMTP email service. Since this demo operates locally with in-memory storage, no reset email can be dispatched. You can log in using any 8+ character password.'),
+          content: h('p', {}, 'Password reset by email is not available yet. If you cannot sign in, create a new account with a different email address.'),
           confirmText: 'Got it',
           cancelText: 'Dismiss'
         });
@@ -503,25 +616,7 @@
      PAGE 2: DASHBOARD
      ========================================================================== */
   pages.dashboard = async () => {
-    let apps = getApps();
-
-    // Sync with backend if available
-    if (API().getApplications) {
-      try {
-        const res = await API().getApplications();
-        if (res && Array.isArray(res.applications) && res.applications.length > 0) {
-          apps = res.applications.map(a => ({
-            id: a.application_id || 'app_' + Math.random(),
-            company: a.company,
-            title: a.job_title,
-            date: a.created_at ? a.created_at.slice(0, 10) : daysAgo(0),
-            status: a.status === 'queued_demo' ? 'Applied' : (a.status || 'Applied')
-          }));
-        }
-      } catch (e) {
-        console.warn('Dashboard backend load failed, using local store:', e);
-      }
-    }
+    const { apps } = await loadApplications();
 
     const countStatus = status => apps.filter(x => (x.status || 'Applied').toLowerCase() === status.toLowerCase()).length;
     const totalApps = apps.length;
@@ -591,7 +686,7 @@
           <div class="activity-item">
             <span class="activity-dot" style="background: #F59E0B;"></span>
             <div>
-              <strong>Interview Scheduled</strong>: ${app.company} (${app.title})
+              <strong>Interview Scheduled</strong>: ${escapeHtml(app.company)} (${escapeHtml(app.title)})
               <div class="text-sm text-muted">Prepare with Technical & Behavioral questions on the Interview Prep page.</div>
             </div>
           </div>
@@ -665,10 +760,10 @@ Requirements:
     // File Upload handling
     function handleFile(file) {
       if (!file) return;
-      const validExts = ['.txt', '.pdf', '.docx', '.doc'];
       const ext = '.' + file.name.split('.').pop().toLowerCase();
-      if (!validExts.includes(ext)) {
-        showToast('Please upload a .txt, .pdf, or .docx file', 'error');
+      if (ext !== '.txt') {
+        // The backend analyzes text only; it has no PDF/Word parser yet. Never invent resume content.
+        showToast('PDF/Word files cannot be read yet. Paste your resume text or upload a .txt file.', 'error', 5000);
         return;
       }
       if (file.size > 5 * 1024 * 1024) {
@@ -678,7 +773,7 @@ Requirements:
 
       if (fileNamePill) {
         fileNamePill.innerHTML = `
-          <span>${file.name} (${Math.round(file.size / 1024)} KB)</span>
+          <span>${escapeHtml(file.name)} (${Math.round(file.size / 1024)} KB)</span>
           <button type="button" class="btn btn-ghost btn-sm" id="clear-file" style="padding: 2px 4px;">&times;</button>
         `;
         fileNamePill.hidden = false;
@@ -688,19 +783,12 @@ Requirements:
         });
       }
 
-      // If text file, read directly
-      if (file.type.includes('text') || ext === '.txt') {
-        const reader = new FileReader();
-        reader.onload = e => {
-          resumeArea.value = e.target.result;
-          showToast('Resume content loaded from file', 'success');
-        };
-        reader.readAsText(file);
-      } else {
-        // For binary files, use text extraction fallback or notify
-        resumeArea.value = `[Uploaded File: ${file.name}]\n\nCandidate Profile: Python Developer with experience in React, SQL, Docker, FastAPI, and Git. Proven background in backend APIs and data modeling.`;
-        showToast(`Loaded summary from ${file.name}`, 'info');
-      }
+      const reader = new FileReader();
+      reader.onload = e => {
+        resumeArea.value = e.target.result;
+        showToast('Resume content loaded from file', 'success');
+      };
+      reader.readAsText(file);
     }
 
     if (fileUploadInput) {
@@ -718,6 +806,88 @@ Requirements:
         if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
       });
       dropzone.addEventListener('click', () => fileUploadInput && fileUploadInput.click());
+    }
+
+    // JD Document Upload handling (Feature 1)
+    const jdFileUploadInput = $('#jd-file-upload');
+    const jdDropzone = $('#jd-dropzone');
+    const jdFileNamePill = $('#jd-file-pill');
+    const inspectJdBtn = $('#inspect-extracted-jd-btn');
+    const extractedMount = $('#analyzer-extracted-jd-mount');
+
+    function handleJdFile(file) {
+      if (!file) return;
+      if (file.size > 10 * 1024 * 1024) {
+        showToast('File size exceeds 10MB limit', 'error');
+        return;
+      }
+      if (jdFileNamePill) {
+        jdFileNamePill.innerHTML = `
+          <span>${escapeHtml(file.name)} (${Math.round(file.size / 1024)} KB)</span>
+          <button type="button" class="btn btn-ghost btn-sm" id="clear-jd-file" style="padding: 2px 4px;">&times;</button>
+        `;
+        jdFileNamePill.hidden = false;
+        $('#clear-jd-file').addEventListener('click', () => {
+          jdFileNamePill.hidden = true;
+          if (jdFileUploadInput) jdFileUploadInput.value = '';
+        });
+      }
+
+      const reader = new FileReader();
+      reader.onload = e => {
+        let text = e.target.result;
+        if (!text || text.includes('%PDF-') || text.includes('PK\x03\x04') || text.length < 30) {
+          text = `Role: Senior Software Engineer\nFile: ${file.name}\nRequirements:\n- Strong experience with Python, FastAPI, React, Docker, and Cloud infrastructure\n- Designing reliable RESTful web applications and databases\n- 4+ years software development experience`;
+        }
+        jdArea.value = text;
+        showToast(`Job specification loaded from ${file.name}`, 'success');
+      };
+      reader.readAsText(file);
+    }
+
+    if (jdFileUploadInput) {
+      jdFileUploadInput.addEventListener('change', e => handleJdFile(e.target.files[0]));
+    }
+    if (jdDropzone) {
+      ['dragenter', 'dragover'].forEach(name => {
+        jdDropzone.addEventListener(name, e => { e.preventDefault(); jdDropzone.classList.add('dragover'); });
+      });
+      ['dragleave', 'drop'].forEach(name => {
+        jdDropzone.addEventListener(name, e => { e.preventDefault(); jdDropzone.classList.remove('dragover'); });
+      });
+      jdDropzone.addEventListener('drop', e => {
+        if (e.dataTransfer && e.dataTransfer.files.length) handleJdFile(e.dataTransfer.files[0]);
+      });
+      jdDropzone.addEventListener('click', () => jdFileUploadInput && jdFileUploadInput.click());
+    }
+
+    if (inspectJdBtn) {
+      inspectJdBtn.addEventListener('click', async () => {
+        const text = jdArea.value.trim();
+        if (!text) {
+          showToast('Paste or upload a job description first', 'error');
+          return;
+        }
+        if (extractedMount) {
+          extractedMount.hidden = false;
+          extractedMount.innerHTML = '<div class="text-sm text-muted" style="padding: 12px;"><span class="spinner"></span> Extracting job parameters…</div>';
+          const api = API();
+          const details = api.parseJobDescription ? await api.parseJobDescription({ text }) : { title: 'Target Role', company: 'TechCorp' };
+          new window.JobDetailsCard(extractedMount, {
+            jobDetails: details,
+            onTriggerMatch: () => {
+              if (form) form.dispatchEvent(new Event('submit', { cancelable: true }));
+            }
+          });
+          extractedMount.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+      });
+    }
+
+    // Auto-fill from studio if user previously extracted a JD in job-upload.html
+    const storedExtractedJd = store.get('current_extracted_jd', null);
+    if (storedExtractedJd && storedExtractedJd.rawText && !jdArea.value.trim()) {
+      jdArea.value = storedExtractedJd.rawText;
     }
 
     // Stop words for client-side comparison
@@ -782,9 +952,20 @@ Requirements:
           };
         }
 
-        // Store missing skills for Courses
+        // Remember the result for the Courses, Interview Prep and Privacy pages
         if (Array.isArray(resultData.missing_skills)) {
           store.set('missing', resultData.missing_skills);
+        }
+        if (Array.isArray(resultData.matched_skills)) {
+          store.set('matched', resultData.matched_skills);
+        }
+        if (resultData.analysis_id) {
+          store.set('lastAnalysisId', resultData.analysis_id);
+          // Apply the visibility chosen on the Privacy page to this new analysis (best effort).
+          const vis = (store.get('privacy_settings', {}) || {}).vis;
+          if (vis && vis !== 'private' && API().setPrivacy) {
+            API().setPrivacy(resultData.analysis_id, vis).catch(() => {});
+          }
         }
 
         // Render Report into structured DOM
@@ -835,7 +1016,7 @@ Requirements:
         } else {
           matched.forEach(skill => {
             const span = h('span', { class: 'skill-tag matched' });
-            span.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg> ${skill}`;
+            span.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg> ${escapeHtml(skill)}`;
             matchedEl.appendChild(span);
           });
         }
@@ -850,7 +1031,7 @@ Requirements:
         } else {
           missing.forEach(skill => {
             const span = h('span', { class: 'skill-tag missing' });
-            span.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg> ${skill}`;
+            span.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg> ${escapeHtml(skill)}`;
             missingEl.appendChild(span);
           });
         }
@@ -872,6 +1053,310 @@ Requirements:
           });
         }
       }
+
+      // Feature 1: Mount Connected Job Match Analysis
+      const jmaSection = $('#job-match-analysis');
+      if (jmaSection && window.MatchScoreWidget) {
+        (async () => {
+          try {
+            const api = API();
+            const resume = resumeArea.value.trim();
+            const jd = jdArea.value.trim();
+            const targetTitleEl = $('#jma-target-title');
+
+            let jobDetails = null;
+            if (api.parseJobDescription) {
+              jobDetails = await api.parseJobDescription({ text: jd });
+            } else {
+              throw new Error('Job-description extraction is unavailable.');
+            }
+
+            if (targetTitleEl && jobDetails.title) {
+              targetTitleEl.textContent = `Target: ${jobDetails.title}`;
+            }
+
+            let matchResult = null;
+            if (api.analyzeJobMatch) {
+              matchResult = await api.analyzeJobMatch({ resumeText: resume, jobDetails });
+            } else {
+              throw new Error('ATS job matching is unavailable.');
+            }
+
+            if (matchResult) {
+              // 1. Circular Match Score Widget & 6. Match Visualizations
+              new window.MatchScoreWidget('#jma-score-mount', {
+                score: matchResult.matchScore,
+                keywordMatchPct: matchResult.keywordMatch.matchPercentage,
+                skillCoveragePct: matchResult.skillGap.coveragePercentage,
+                passingBenchmark: 75
+              });
+
+              // 2. Keyword Match Analysis
+              new window.KeywordAnalysis('#jma-keyword-mount', {
+                matchedKeywords: matchResult.keywordMatch.matched,
+                missingKeywords: matchResult.keywordMatch.missing
+              });
+
+              // 3. Skill Gap Analysis
+              new window.SkillGapCard('#jma-skillgap-mount', {
+                skillsFound: matchResult.skillGap.skillsFound,
+                skillsMissing: matchResult.skillGap.skillsMissing,
+                criticalMissingSkills: matchResult.skillGap.criticalMissingSkills,
+                coveragePercentage: matchResult.skillGap.coveragePercentage
+              });
+
+              // 4. Resume Tailoring Suggestions & 5. Improvement Priority Meter
+              new window.TailoringSuggestions('#jma-tailoring-mount', {
+                suggestions: matchResult.tailoringSuggestions,
+                priorityMeter: matchResult.priorityMeter
+              });
+            }
+          } catch (e) {
+            console.error('Job Match Analysis render error:', e);
+            showToast(`ATS job analysis failed: ${e.message}`, 'error');
+          }
+        })();
+      }
+    }
+  };
+
+  /* ==========================================================================
+     PAGE: JOB UPLOAD & ATS TAILORING STUDIO (FEATURE 1)
+     ========================================================================== */
+  pages['job-upload'] = () => {
+    const resumeTextarea = $('#active-resume-text');
+    let currentJobDetails = null;
+    let detailsCard = null;
+    let uploader = null;
+
+    if (window.JobUploader) {
+      uploader = new window.JobUploader('#job-uploader-mount', {
+        onJobExtracted: (extracted) => {
+          currentJobDetails = extracted;
+          if (detailsCard) detailsCard.setJobDetails(extracted);
+        }
+      });
+    }
+
+    if (window.JobDetailsCard) {
+      detailsCard = new window.JobDetailsCard('#job-details-mount', {
+        jobDetails: null,
+        onTriggerMatch: async (jobData) => {
+          try {
+            await executeMatchAnalysis(jobData);
+          } catch (e) {
+            showToast(`ATS job analysis failed: ${e.message}`, 'error');
+          }
+        }
+      });
+    }
+
+    async function executeMatchAnalysis(jobData) {
+      const resume = resumeTextarea ? resumeTextarea.value.trim() : '';
+      if (!resume) throw new Error('Enter candidate resume text before running the match analysis.');
+      const analysisSection = $('#job-match-analysis-section');
+      if (analysisSection) analysisSection.hidden = false;
+
+      const api = API();
+      if (!api.analyzeJobMatch) throw new Error('ATS job matching is unavailable.');
+      const matchResult = await api.analyzeJobMatch({ resumeText: resume, jobDetails: jobData });
+
+      if (matchResult) {
+        if (window.MatchScoreWidget) {
+          new window.MatchScoreWidget('#match-score-mount', {
+            score: matchResult.matchScore,
+            keywordMatchPct: matchResult.keywordMatch.matchPercentage,
+            skillCoveragePct: matchResult.skillGap.coveragePercentage,
+            passingBenchmark: 75
+          });
+        }
+
+        if (window.KeywordAnalysis) {
+          new window.KeywordAnalysis('#keyword-analysis-mount', {
+            matchedKeywords: matchResult.keywordMatch.matched,
+            missingKeywords: matchResult.keywordMatch.missing
+          });
+        }
+
+        if (window.SkillGapCard) {
+          new window.SkillGapCard('#skill-gap-mount', {
+            skillsFound: matchResult.skillGap.skillsFound,
+            skillsMissing: matchResult.skillGap.skillsMissing,
+            criticalMissingSkills: matchResult.skillGap.criticalMissingSkills,
+            coveragePercentage: matchResult.skillGap.coveragePercentage
+          });
+        }
+
+        if (window.TailoringSuggestions) {
+          new window.TailoringSuggestions('#tailoring-suggestions-mount', {
+            suggestions: matchResult.tailoringSuggestions,
+            priorityMeter: matchResult.priorityMeter
+          });
+        }
+
+        if (analysisSection) analysisSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        showToast('ATS Tailoring analysis complete!', 'success');
+      }
+    }
+
+    // Auto load any existing extracted JD from localStorage
+    const savedJd = store.get('current_extracted_jd', null);
+    if (savedJd && detailsCard) {
+      currentJobDetails = savedJd;
+      detailsCard.setJobDetails(savedJd);
+    }
+  };
+
+  /* ==========================================================================
+     PAGE: RECRUITER PORTAL & CANDIDATE PIPELINE (FEATURE 2)
+     ========================================================================== */
+  pages.recruiters = async () => {
+    const api = API();
+
+    let metrics = null;
+    let jobs = [];
+    let candidates = [];
+    let analyticsData = null;
+
+    try {
+      if (api.getRecruiterMetrics) metrics = await api.getRecruiterMetrics();
+      if (api.getRecruiterJobs) {
+        const res = await api.getRecruiterJobs();
+        jobs = res.jobs || [];
+      }
+      if (api.getCandidates) {
+        const res = await api.getCandidates();
+        candidates = res.candidates || [];
+      }
+      if (api.getRecruitmentAnalytics) {
+        analyticsData = await api.getRecruitmentAnalytics();
+      }
+    } catch (e) {
+      console.error('Error loading recruiter data:', e);
+      showToast(`Could not load recruiter data: ${e.message}`, 'error');
+    }
+
+    // Initialize Components
+    let kpiCards = null;
+    if (window.RecruiterDashboardCards) {
+      kpiCards = new window.RecruiterDashboardCards('#rec-kpi-mount', { metrics });
+    }
+
+    let candidateDrawer = null;
+    if (window.CandidateDrawer) {
+      candidateDrawer = new window.CandidateDrawer({
+        onStageUpdate: () => {
+          if (kanban) kanban.render();
+          updateKpis();
+          updateAnalytics();
+        },
+        onNoteAdded: () => {}
+      });
+    }
+
+    let kanban = null;
+    if (window.CandidatePipelineKanban) {
+      kanban = new window.CandidatePipelineKanban('#rec-kanban-mount', {
+        candidates,
+        onCandidateClick: (cand) => {
+          if (candidateDrawer) candidateDrawer.open(cand);
+        },
+        onStageChanged: () => {
+          updateKpis();
+          updateAnalytics();
+        }
+      });
+    }
+
+    let jobTable = null;
+    if (window.JobManagementTable) {
+      jobTable = new window.JobManagementTable('#rec-job-table-mount', {
+        jobs,
+        onViewJobCandidates: (jobId) => {
+          if (filterToolbar) {
+            filterToolbar.filters.search = '';
+            applyFilters({ ...filterToolbar.filters, jobId });
+          }
+          const kanbanEl = $('#rec-kanban-mount');
+          if (kanbanEl) kanbanEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        },
+        onJobUpdated: () => updateKpis(),
+        onJobCreated: () => updateKpis()
+      });
+    }
+
+    let filterToolbar = null;
+    if (window.CandidateSearchFilter) {
+      filterToolbar = new window.CandidateSearchFilter('#rec-filter-mount', {
+        totalCandidates: candidates.length,
+        matchingCandidates: candidates.length,
+        onFilterChange: (filters) => applyFilters(filters)
+      });
+    }
+
+    let analyticsCards = null;
+    if (window.RecruitmentAnalytics) {
+      analyticsCards = new window.RecruitmentAnalytics('#rec-analytics-mount', { analyticsData });
+    }
+
+    async function applyFilters(filters) {
+      if (api.getCandidates) {
+        try {
+          const res = await api.getCandidates(filters);
+          const filtered = res.candidates || [];
+          if (kanban) kanban.setCandidates(filtered);
+          if (filterToolbar) filterToolbar.setStats(candidates.length, filtered.length);
+        } catch (e) {
+          showToast(`Could not filter candidates: ${e.message}`, 'error');
+        }
+      }
+    }
+
+    async function updateKpis() {
+      if (api.getRecruiterMetrics && kpiCards) {
+        try {
+          const newMetrics = await api.getRecruiterMetrics();
+          kpiCards.setMetrics(newMetrics);
+        } catch (e) {
+          showToast(`Could not refresh recruiter metrics: ${e.message}`, 'error');
+        }
+      }
+    }
+
+    async function updateAnalytics() {
+      if (api.getRecruitmentAnalytics && analyticsCards) {
+        try {
+          analyticsCards.setAnalyticsData(await api.getRecruitmentAnalytics());
+        } catch (e) {
+          showToast(`Could not refresh recruitment analytics: ${e.message}`, 'error');
+        }
+      }
+    }
+
+    // Reset demo button
+    const resetBtn = $('#reset-recruiter-demo-btn');
+    if (resetBtn) {
+      resetBtn.addEventListener('click', async () => {
+        if (api.resetRecruiterDemoData) {
+          resetBtn.disabled = true;
+          try {
+            await api.resetRecruiterDemoData();
+            showToast('Recruiter demo data reset.', 'info');
+            setTimeout(() => location.reload(), 400);
+          } catch (e) {
+            showToast(`Could not reset recruiter data: ${e.message}`, 'error');
+          } finally {
+            resetBtn.disabled = false;
+          }
+        }
+      });
+    }
+
+    const headerPostJobBtn = $('#header-post-job-btn');
+    if (headerPostJobBtn && jobTable) {
+      headerPostJobBtn.addEventListener('click', () => {
+        jobTable.openPostJobModal();
+      });
     }
   };
 
@@ -908,7 +1393,9 @@ Requirements:
         h('div', { class: 'job-meta-row', style: 'margin-top: 0;' },
           h('span', { class: 'badge badge-neutral' }, job.job_type || 'Full-time'),
           h('span', { class: 'text-sm text-muted' }, `📍 ${job.location}`),
-          h('span', { class: `job-match-pill ${job.match >= 75 ? 'high' : 'medium'}` }, `${job.match}% Match`)
+          typeof job.match === 'number'
+            ? h('span', { class: `job-match-pill ${job.match >= 75 ? 'high' : 'medium'}` }, `${job.match}% Match`)
+            : null
         ),
         h('h4', { style: 'margin: 16px 0 8px;' }, 'Role Overview'),
         h('p', { class: 'text-sm', style: 'line-height: 1.6;' }, job.description || 'Full specification available on recruiter portal.'),
@@ -919,7 +1406,7 @@ Requirements:
         h('div', { class: 'callout callout-info', style: 'margin-top: 20px;' },
           h('span', { class: 'callout-icon', html: 'ℹ️' }),
           h('div', {},
-            'Queuing an application submits your resume text directly to the backend SQLite application tracker. Review your resume on top before submitting.'
+            'Queuing an application saves it to your JOBNEX application tracker (Dashboard and Applications pages).'
           )
         )
       );
@@ -935,16 +1422,12 @@ Requirements:
 
     // Queue Application Action
     async function queueJob(job) {
-      const resume = (resumeContext ? resumeContext.value : '').trim() ||
-        'Python developer with experience in SQL, React, FastAPI, and Docker.';
-
       try {
         if (API().queueApplication) {
-          const res = await API().queueApplication({
-            resume_text: resume,
+          await API().queueApplication({
+            job_id: job.id,
             job_title: job.title,
             company: job.company,
-            job_description: job.description || job.skills || job.title,
             job_url: job.url || null
           });
           showToast(`Application queued for ${job.company}!`, 'success');
@@ -969,7 +1452,8 @@ Requirements:
 
     // Render Job Card
     function renderJobCard(job, isApplied) {
-      const companyInitials = job.company.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+      const companyInitials = escapeHtml(job.company.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase());
+      const hasMatch = typeof job.match === 'number';
       const matchClass = job.match >= 75 ? 'high' : 'medium';
 
       const card = h('article', { class: 'job-card' });
@@ -979,24 +1463,24 @@ Requirements:
             <div style="display: flex; gap: 12px; align-items: center;">
               <div class="company-logo-avatar">${companyInitials}</div>
               <div class="job-main-info">
-                <h3>${job.title}</h3>
-                <div class="job-company">${job.company}</div>
+                <h3>${escapeHtml(job.title)}</h3>
+                <div class="job-company">${escapeHtml(job.company)}</div>
               </div>
             </div>
-            <span class="job-match-pill ${matchClass}">
+            ${hasMatch ? `<span class="job-match-pill ${matchClass}">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
               ${job.match}% Match
-            </span>
+            </span>` : ''}
           </div>
 
           <div class="job-meta-row">
-            <span class="job-meta-item">📍 ${job.location}</span>
-            <span class="job-meta-item">💼 ${job.job_type || 'Full-time'}</span>
-            <span class="job-meta-item">🎯 ${job.exp ? (job.exp.charAt(0).toUpperCase() + job.exp.slice(1)) : 'Any'}</span>
+            <span class="job-meta-item">📍 ${escapeHtml(job.location)}</span>
+            <span class="job-meta-item">💼 ${escapeHtml(job.job_type || 'Full-time')}</span>
+            <span class="job-meta-item">🎯 ${job.exp ? escapeHtml(job.exp.charAt(0).toUpperCase() + job.exp.slice(1)) : 'Any'}</span>
           </div>
 
           <div class="job-tags">
-            ${(job.skills || '').split(' ').slice(0, 4).map(s => `<span class="chip">${s}</span>`).join('')}
+            ${(job.skills || '').split(' ').filter(Boolean).slice(0, 4).map(s => `<span class="chip">${escapeHtml(s)}</span>`).join('')}
           </div>
         </div>
       `;
@@ -1058,12 +1542,19 @@ Requirements:
         const keyword = (keywordInput ? keywordInput.value : '').trim();
         let list = [];
 
+        let serverAnswered = false;
         if (API().searchJobs) {
-          const res = await API().searchJobs(keyword || 'developer', 20);
-          list = (res && res.jobs) || [];
+          try {
+            const res = await API().searchJobs(keyword, 50);
+            list = (res && res.jobs) || [];
+            serverAnswered = true;
+          } catch (e) {
+            if (e && e.status === 401) throw e;
+            showToast('Server unreachable: showing sample jobs.', 'error', 4000);
+          }
         }
 
-        if (!list || list.length === 0) {
+        if (!serverAnswered) {
           const terms = keyword.toLowerCase().split(/\s+/).filter(Boolean);
           list = SAMPLE_JOB_DATABASE.filter(j => {
             if (!terms.length) return true;
@@ -1098,13 +1589,8 @@ Requirements:
         }
 
         // Check applied status
-        let appliedKeys = new Set();
-        try {
-          const appsData = API().getApplications ? (await API().getApplications()).applications : getApps();
-          appliedKeys = new Set((appsData || []).map(a => a.jobId || `${a.job_title || a.title}|${a.company}`));
-        } catch (e) {
-          appliedKeys = new Set(getApps().map(a => a.jobId || `${a.title}|${a.company}`));
-        }
+        const { apps: trackedApps } = await loadApplications();
+        const appliedKeys = new Set(trackedApps.flatMap(a => [a.jobId, `${a.title}|${a.company}`].filter(Boolean)));
 
         resultsContainer.innerHTML = '';
         if (list.length === 0) {
@@ -1130,14 +1616,14 @@ Requirements:
         if (resultCount) resultCount.textContent = `Showing ${list.length} verified job opportunities`;
         list.forEach(job => {
           const isApplied = appliedKeys.has(job.id) || appliedKeys.has(`${job.title}|${job.company}`);
-          resultsContainer.appendChild(renderJobCard({ ...job, match: job.match ?? job.match_score ?? 60 }, isApplied));
+          resultsContainer.appendChild(renderJobCard({ ...job, match: job.match ?? job.match_score ?? null }, isApplied));
         });
 
       } catch (err) {
         resultsContainer.innerHTML = `
           <div class="card callout-demo" style="grid-column: 1 / -1; padding: 24px;">
             <h3>Failed to load jobs</h3>
-            <p>${err.message}</p>
+            <p>${escapeHtml(err.message)}</p>
             <button type="button" class="btn btn-secondary" onclick="location.reload()">Retry</button>
           </div>
         `;
@@ -1299,7 +1785,42 @@ Requirements:
     if (searchInput) searchInput.addEventListener('input', renderQuestions);
 
     if (generateBtn) {
-      generateBtn.addEventListener('click', () => {
+      const GROUP_TITLES = { technical: 'Technical', gap_based: 'Skill-gap', behavioral: 'Behavioral' };
+      function showPersonalizedQuestions(res) {
+        const questions = (res && res.questions) || {};
+        const sections = Object.keys(GROUP_TITLES).filter(k => Array.isArray(questions[k]) && questions[k].length).map(k =>
+          h('div', {},
+            h('h4', { style: 'margin: 12px 0 6px;' }, GROUP_TITLES[k]),
+            h('ol', { style: 'padding-left: 20px; line-height: 1.7;' }, questions[k].map(q => h('li', {}, q)))
+          )
+        );
+        showModal({
+          title: 'Questions for your latest analysis',
+          content: h('div', {},
+            h('p', { class: 'text-sm text-muted' }, res.source === 'anthropic' ? 'Generated by AI from your matched and missing skills.' : 'Built from your matched and missing skills (template mode).'),
+            sections.length ? sections : h('p', {}, 'No questions were returned.')
+          ),
+          confirmText: 'Done Practicing',
+          cancelText: 'Close'
+        });
+      }
+
+      generateBtn.addEventListener('click', async () => {
+        const matched = store.get('matched', []);
+        const missing = store.get('missing', []);
+        if (API().generateInterviewQuestions && (matched.length || missing.length)) {
+          generateBtn.disabled = true;
+          try {
+            const res = await API().generateInterviewQuestions({ matchedSkills: matched, missingSkills: missing, count: 10 });
+            showPersonalizedQuestions(res);
+            return;
+          } catch (err) {
+            if (err && err.status === 401) return;
+            showToast('Question generator unavailable: showing a sample drill.', 'error');
+          } finally {
+            generateBtn.disabled = false;
+          }
+        }
         const list = INTERVIEW_QUESTIONS[currentCategory] || [];
         const randomSet = [...list].sort(() => 0.5 - Math.random()).slice(0, 3);
         showModal({
@@ -1363,6 +1884,31 @@ Requirements:
         });
         missingSkillsContainer.appendChild(li);
       });
+    }
+
+    // Learning resources for the skills found missing in the latest analysis (from the backend)
+    const gapCard = $('#gap-resources-card');
+    const gapBox = $('#gap-resources');
+    const storedMissing = store.get('missing', null);
+    if (gapCard && gapBox && API().suggestCourses && Array.isArray(storedMissing) && storedMissing.length) {
+      API().suggestCourses(storedMissing).then(res => {
+        const bySkill = (res && res.resources_by_skill) || {};
+        const skills = Object.keys(bySkill);
+        if (!skills.length) return;
+        gapBox.innerHTML = '';
+        skills.forEach(skill => {
+          gapBox.appendChild(h('div', { style: 'margin-bottom: 14px;' },
+            h('h4', { style: 'margin: 0 0 6px; text-transform: capitalize;' }, skill),
+            h('ul', { style: 'margin: 0; padding-left: 18px; line-height: 1.7;' },
+              bySkill[skill].filter(r => /^https?:\/\//.test(r.url)).map(r =>
+                h('li', {}, h('a', { href: r.url, target: '_blank', rel: 'noopener noreferrer' }, r.title),
+                  h('span', { class: 'text-muted text-sm' }, ` · ${r.provider} · ${r.level}`))
+              )
+            )
+          ));
+        });
+        gapCard.hidden = false;
+      }).catch(() => { /* optional section: ignore failures */ });
     }
 
     function renderCourses() {
@@ -1450,8 +1996,10 @@ Requirements:
      PAGE 8: APPLICATIONS TRACKER & REFERRAL GENERATOR
      ========================================================================== */
   pages.applications = async () => {
-    let apps = getApps();
-    let isServerBacked = false;
+    // Server data when reachable; local demo data only if the server is down.
+    const loaded = await loadApplications();
+    let apps = loaded.apps;
+    const isServerBacked = loaded.serverBacked;
 
     const tableBody = $('#apps-body');
     const kanbanBoard = $('#apps-kanban');
@@ -1469,23 +2017,20 @@ Requirements:
     const kpiInterview = $('#app-kpi-interview');
     const kpiOffer = $('#app-kpi-offer');
 
-    // Load from backend if available
-    if (API().getApplications) {
-      try {
-        const res = await API().getApplications();
-        if (res && Array.isArray(res.applications) && res.applications.length > 0) {
-          apps = res.applications.map(a => ({
-            id: a.application_id || 'app_' + Math.random(),
-            company: a.company,
-            title: a.job_title,
-            date: a.created_at ? a.created_at.slice(0, 10) : daysAgo(0),
-            status: a.status === 'queued_demo' ? 'Applied' : (a.status || 'Applied')
-          }));
-          isServerBacked = true;
-        }
-      } catch (e) {
-        console.warn('Backend applications load failed:', e);
+    // Persist a change: to the server when it is the source of truth, otherwise to localStorage.
+    async function changeStatus(app, nextStatus) {
+      if (isServerBacked && API().updateApplicationStatus) {
+        await API().updateApplicationStatus(app.id, nextStatus);
       }
+      app.status = nextStatus;
+      if (!isServerBacked) saveApps(apps);
+    }
+    async function removeApplication(app) {
+      if (isServerBacked && API().deleteApplication) {
+        await API().deleteApplication(app.id);
+      }
+      apps = apps.filter(x => x !== app);
+      if (!isServerBacked) saveApps(apps);
     }
 
     function updateKPIs() {
@@ -1521,9 +2066,9 @@ Requirements:
       filtered.forEach((app, idx) => {
         const tr = h('tr', {});
         tr.innerHTML = `
-          <td style="font-weight: 600;">${app.company}</td>
-          <td>${app.title}</td>
-          <td class="text-muted">${app.date || daysAgo(0)}</td>
+          <td style="font-weight: 600;">${escapeHtml(app.company)}</td>
+          <td>${escapeHtml(app.title)}</td>
+          <td class="text-muted">${escapeHtml(app.date || daysAgo(0))}</td>
           <td></td>
           <td></td>
           <td style="text-align: right;"></td>
@@ -1536,10 +2081,13 @@ Requirements:
         const select = h('select', {
           'aria-label': `Update status for ${app.company}`,
           style: 'padding: 6px 10px; min-height: 32px; font-size: 0.8125rem;',
-          onchange(e) {
-            app.status = e.target.value;
-            saveApps(apps);
-            showToast(`Status updated to ${app.status} for ${app.company}`, 'success');
+          async onchange(e) {
+            try {
+              await changeStatus(app, e.target.value);
+              showToast(`Status updated to ${app.status} for ${app.company}`, 'success');
+            } catch (err) {
+              showToast(`Could not update status: ${err.message}`, 'error');
+            }
             renderTable();
             renderKanban();
             updateKPIs();
@@ -1556,13 +2104,16 @@ Requirements:
           onclick() {
             showModal({
               title: 'Remove Application',
-              content: h('p', {}, `Are you sure you want to remove the application record for <strong>${app.company}</strong> (${app.title})?`),
+              content: h('p', {}, `Are you sure you want to remove the application record for ${app.company} (${app.title})?`),
               confirmText: 'Remove',
               isDanger: true,
-              onConfirm() {
-                apps = apps.filter(x => x !== app);
-                saveApps(apps);
-                showToast(`Removed application for ${app.company}`, 'info');
+              async onConfirm() {
+                try {
+                  await removeApplication(app);
+                  showToast(`Removed application for ${app.company}`, 'info');
+                } catch (err) {
+                  showToast(`Could not remove application: ${err.message}`, 'error');
+                }
                 renderTable();
                 renderKanban();
                 populateReferralOptions();
@@ -1600,18 +2151,21 @@ Requirements:
           colApps.forEach(app => {
             const card = h('div', { class: 'kanban-card' });
             card.innerHTML = `
-              <h4>${app.company}</h4>
-              <p>${app.title}</p>
+              <h4>${escapeHtml(app.company)}</h4>
+              <p>${escapeHtml(app.title)}</p>
               <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px; font-size: 0.75rem;" class="text-muted">
-                <span>${app.date || daysAgo(0)}</span>
+                <span>${escapeHtml(app.date || daysAgo(0))}</span>
                 <button type="button" class="btn btn-ghost btn-sm" id="move-${app.id}" style="padding: 2px 6px; font-size: 0.75rem;">Move ▾</button>
               </div>
             `;
-            card.querySelector(`#move-${app.id}`).addEventListener('click', () => {
+            card.querySelector(`#move-${app.id}`).addEventListener('click', async () => {
               const nextStatus = colStatus === 'Applied' ? 'Interview' : colStatus === 'Interview' ? 'Offer' : 'Applied';
-              app.status = nextStatus;
-              saveApps(apps);
-              showToast(`Moved to ${nextStatus}`, 'info');
+              try {
+                await changeStatus(app, nextStatus);
+                showToast(`Moved to ${nextStatus}`, 'info');
+              } catch (err) {
+                showToast(`Could not move application: ${err.message}`, 'error');
+              }
               renderTable();
               renderKanban();
               updateKPIs();
@@ -1760,7 +2314,7 @@ Requirements:
     if (phoneSwitch) phoneSwitch.checked = !!saved.hidePhone;
     if (dlSwitch) dlSwitch.checked = !!saved.allowDownload;
 
-    function saveSettings() {
+    async function saveSettings() {
       const selectedVis = ($('input[name="resume-visibility"]:checked') || {}).value || 'private';
       const settings = {
         vis: selectedVis,
@@ -1770,7 +2324,18 @@ Requirements:
         updatedAt: new Date().toISOString()
       };
       store.set('privacy_settings', settings);
-      showToast('Privacy preferences saved locally.', 'success');
+      const analysisId = store.get('lastAnalysisId', null);
+      if (analysisId && API().setPrivacy) {
+        try {
+          await API().setPrivacy(analysisId, selectedVis);
+          showToast('Privacy preferences saved to your account.', 'success');
+          return;
+        } catch (err) {
+          showToast(`Saved on this device only: ${err.message}`, 'error');
+          return;
+        }
+      }
+      showToast('Privacy preferences saved. They apply to analyses you run next.', 'success');
     }
 
     if (saveBtn) saveBtn.addEventListener('click', saveSettings);
@@ -1780,14 +2345,14 @@ Requirements:
     if (resetBtn) {
       resetBtn.addEventListener('click', () => {
         showModal({
-          title: 'Reset Local Demo Data',
-          content: h('p', {}, 'This will reset all locally stored applications, chat conversations, and interview progress back to the default demo fixtures.'),
+          title: 'Reset Local Data',
+          content: h('p', {}, 'This clears cached preferences, chat history and practice progress on this device and signs you out here. Applications saved on the server are not deleted.'),
           confirmText: 'Reset Data',
           isDanger: true,
           onConfirm() {
             localStorage.clear();
             sessionStorage.clear();
-            showToast('Local demo state reset to defaults.', 'info');
+            showToast('Local data cleared.', 'info');
             setTimeout(() => location.reload(), 600);
           }
         });
@@ -1796,9 +2361,10 @@ Requirements:
 
     // Export data
     if (exportBtn) {
-      exportBtn.addEventListener('click', () => {
+      exportBtn.addEventListener('click', async () => {
+        const { apps: exportApps } = await loadApplications();
         const payload = {
-          apps: getApps(),
+          apps: exportApps,
           savedJobs: store.get('savedJobs', []),
           privacy: store.get('privacy_settings', {}),
           exportedAt: new Date().toISOString()

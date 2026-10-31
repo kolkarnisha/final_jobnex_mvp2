@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Job Description Upload & ATS Tailoring – JOBNEX</title>
+  <meta name="description" content="Upload target job descriptions, extract key competencies, and connect to automated ATS resume match analysis with tailored recommendations.">
+  <link rel="stylesheet" href="common.css">
+  <link rel="stylesheet" href="glow-card.css">
+  <link rel="stylesheet" href="components/job-upload/job-upload.css">
+</head>
+<body data-page="job-upload">
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <header id="site-header" class="site-header"></header>
+
+  <main id="main" class="container">
+    <!-- Page Header -->
+    <div class="page-header">
+      <div class="page-header-text">
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+          <span class="badge badge-primary">ATS Optimizer</span>
+          <span class="badge badge-neutral">Semantic Intake</span>
+        </div>
+        <h1>Job Upload & ATS Tailoring Studio</h1>
+        <p>Extract job requirements from any job description or document and benchmark your candidate resume with precision alignment.</p>
+      </div>
+      <div class="page-actions">
+        <a href="analyzer.html" class="btn btn-secondary">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          Quick Resume Analyzer
+        </a>
+      </div>
+    </div>
+
+    <!-- Callout Banner -->
+    <div class="callout callout-demo" role="note">
+      <span class="callout-icon">ℹ️</span>
+      <div>
+        <strong>Integrated ATS Match Engine:</strong> Uploaded job specifications are parsed for core skills, required experience, and ATS keywords. Results connect automatically to your candidate resume for tailored optimization recommendations.
+      </div>
+    </div>
+
+    <!-- Step 1: Job Uploader Section -->
+    <section id="uploader-section" style="margin-bottom: 24px;">
+      <!-- Mount point for JobUploader component -->
+      <div id="job-uploader-mount"></div>
+    </section>
+
+    <!-- Step 2: Extracted Job Details Card -->
+    <section id="details-section" style="margin-bottom: 24px;">
+      <!-- Mount point for JobDetailsCard component -->
+      <div id="job-details-mount"></div>
+    </section>
+
+    <!-- Resume Selection & Context Card (for tailoring) -->
+    <section class="card" id="resume-context-card" style="margin-bottom: 28px;">
+      <div class="card-header">
+        <div>
+          <h3 style="margin: 0; font-size: 1.15rem; display: flex; align-items: center; gap: 8px;">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--brand-purple)" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/></svg>
+            Candidate Resume Source
+          </h3>
+          <p class="text-sm text-muted" style="margin: 2px 0 0;">Compare extracted job details against this resume profile.</p>
+        </div>
+        <span class="badge badge-neutral">Candidate Profile</span>
+      </div>
+
+      <div>
+        <label for="active-resume-text" style="font-size: 0.8125rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px; display: block;">
+          Candidate Resume Text (Auto-filled or edit below)
+        </label>
+        <textarea
+          id="active-resume-text"
+          rows="5"
+          placeholder="Paste or review candidate resume text here…"
+          style="width: 100%; font-family: inherit; font-size: 0.875rem; padding: 12px; border-radius: var(--radius-md); border: 1px solid var(--border-color); background: var(--surface-main); color: var(--text-primary); resize: vertical; box-sizing: border-box;"
+        >Senior Full Stack Engineer with 4+ years experience in Python, FastAPI, React, TypeScript, Docker, and PostgreSQL. Skilled in microservices, database schema design, REST APIs, and automated CI/CD testing on AWS cloud infrastructure.</textarea>
+      </div>
+    </section>
+
+    <!-- Step 3: Job Match Analysis Section (Hidden until matched) -->
+    <div id="job-match-analysis-section" hidden>
+      <div style="margin-bottom: 20px;">
+        <h2 style="font-size: 1.4rem; color: var(--text-primary); margin: 0 0 4px;">
+          Job Match Analysis Report
+        </h2>
+        <p class="text-sm text-muted" style="margin: 0;">
+          Detailed evaluation of match score, keyword density, skill gaps, and prioritized resume tailoring suggestions.
+        </p>
+      </div>
+
+      <!-- 1. Circular Match Score Widget & Visualizations -->
+      <div id="match-score-mount" style="margin-bottom: 24px;"></div>
+
+      <!-- 2. Keyword Match Analysis -->
+      <div id="keyword-analysis-mount" style="margin-bottom: 24px;"></div>
+
+      <!-- 3. Skill Gap Analysis -->
+      <div id="skill-gap-mount" style="margin-bottom: 24px;"></div>
+
+      <!-- 4 & 5. Categorized Tailoring Suggestions & Improvement Priority Meter -->
+      <div id="tailoring-suggestions-mount" style="margin-bottom: 24px;"></div>
+    </div>
+  </main>
+
+  <footer id="site-footer" class="site-footer"></footer>
+
+  <!-- Component Scripts -->
+  <script src="api.js"></script>
+  <script src="components/job-upload/JobUploader.js"></script>
+  <script src="components/job-upload/JobDetailsCard.js"></script>
+  <script src="components/job-upload/MatchScoreWidget.js"></script>
+  <script src="components/job-upload/KeywordAnalysis.js"></script>
+  <script src="components/job-upload/SkillGapCard.js"></script>
+  <script src="components/job-upload/TailoringSuggestions.js"></script>
+  <script src="components/job-upload/index.js"></script>
+  <script src="common.js"></script>
+</body>
+</html>

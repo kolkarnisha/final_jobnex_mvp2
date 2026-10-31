@@ -6,6 +6,7 @@
   <title>Skill Upskilling & Courses – JOBNEX</title>
   <meta name="description" content="Personalized career upskilling courses. Bridge resume skill gaps with tailored modules across backend, cloud, frontend, and databases.">
   <link rel="stylesheet" href="common.css">
+  <link rel="stylesheet" href="glow-card.css">
 </head>
 <body data-page="courses">
   <a class="skip-link" href="#main">Skip to main content</a>
@@ -30,7 +31,7 @@
     <div class="callout callout-demo" role="note">
       <span class="callout-icon">ℹ️</span>
       <div>
-        <strong>Curated Learning Framework:</strong> In this demo environment, course modules reflect typical enterprise engineering curricula. In production, this connects to your organization's LMS, Coursera, or LinkedIn Learning API.
+        <strong>Curated Learning Framework:</strong> The course cards below are a sample catalog. The "Learning resources for your gaps" section is live: it comes from the backend based on your latest resume analysis.
       </div>
     </div>
 
@@ -48,6 +49,12 @@
       <ul id="missing-skills-list" class="chip-group" style="list-style: none; padding: 0; margin: 0;">
         <!-- Injected by common.js -->
       </ul>
+    </section>
+
+    <!-- Resources for your gaps (filled from POST /api/courses/suggest) -->
+    <section class="card" id="gap-resources-card" aria-labelledby="gap-resources-heading" hidden>
+      <h2 id="gap-resources-heading" style="margin-top: 0;">Learning resources for your gaps</h2>
+      <div id="gap-resources"></div>
     </section>
 
     <!-- Search & Category Filters -->
@@ -79,6 +86,30 @@
     <div id="course-cards" class="grid-auto" aria-live="polite">
       <!-- Injected by common.js -->
     </div>
+
+    <!-- Next steps (glow cards) -->
+    <section class="card" aria-labelledby="next-heading">
+      <div class="card-header">
+        <h2 id="next-heading">Next Steps</h2>
+      </div>
+      <div class="glow-grid">
+        <a href="analyzer.html" class="glow-card">
+          <p class="glow-card__title">ATS Resume</p>
+          <p>Score your resume against a job description and fix what is missing.</p>
+          <p>Analyze resume &rarr;</p>
+        </a>
+        <a href="interveiw.html" class="glow-card">
+          <p class="glow-card__title">Interview Drills</p>
+          <p>Practice behavioral and technical questions with STAR guidance.</p>
+          <p>Start practice &rarr;</p>
+        </a>
+        <a href="jobs.html" class="glow-card">
+          <p class="glow-card__title">Find Jobs</p>
+          <p>Browse curated roles that match your stack and experience.</p>
+          <p>Search jobs &rarr;</p>
+        </a>
+      </div>
+    </section>
   </main>
 
   <footer id="site-footer" class="site-footer"></footer>
